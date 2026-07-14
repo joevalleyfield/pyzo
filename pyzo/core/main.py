@@ -24,6 +24,263 @@ from pyzo import translate
 from pyzo.core.views import ViewManager
 
 
+class _AdsTraceFilter(QtCore.QObject):
+    """Opt-in event trace for diagnosing QtADS drag feedback."""
+
+    _interesting = {
+        QtCore.QEvent.Type.DragEnter,
+        QtCore.QEvent.Type.DragMove,
+        QtCore.QEvent.Type.DragLeave,
+        QtCore.QEvent.Type.Drop,
+        QtCore.QEvent.Type.Show,
+        QtCore.QEvent.Type.Hide,
+        QtCore.QEvent.Type.Paint,
+        QtCore.QEvent.Type.WindowActivate,
+        QtCore.QEvent.Type.WindowDeactivate,
+    }
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._file = open(path, "a", encoding="utf-8")
+
+    def eventFilter(self, watched, event):
+        watched_name = type(watched).__name__
+        event_type = event.type()
+        is_drag_event = event_type in {
+            QtCore.QEvent.Type.DragEnter,
+            QtCore.QEvent.Type.DragMove,
+            QtCore.QEvent.Type.DragLeave,
+            QtCore.QEvent.Type.Drop,
+        }
+        is_ads_widget = "Dock" in watched_name or "Overlay" in watched_name
+        if event_type in self._interesting and (is_drag_event or is_ads_widget):
+            widget = watched if isinstance(watched, QtWidgets.QWidget) else None
+            name = widget.objectName() if widget else ""
+            geometry = widget.geometry().getRect() if widget else None
+            self._file.write(
+                "{:.6f} {} class={} name={} visible={} geometry={} event={}\n".format(
+                    time.monotonic(),
+                    "widget",
+                    watched_name,
+                    name,
+                    widget.isVisible() if widget else None,
+                    geometry,
+                    event_type.name,
+                )
+            )
+            self._file.flush()
+            if (
+                watched_name == "CDockOverlay"
+                and event_type == QtCore.QEvent.Type.Show
+            ):
+                for top_level in QtWidgets.QApplication.topLevelWidgets():
+                    self._file.write(
+                        (
+                            "{:.6f} top-level class={} title={} visible={} "
+                            "geometry={}\n"
+                        ).format(
+                            time.monotonic(),
+                            type(top_level).__name__,
+                            top_level.windowTitle(),
+                            top_level.isVisible(),
+                            top_level.geometry().getRect(),
+                        )
+                    )
+                self._file.flush()
+        return False
+
+    def close(self):
+        self._file.close()
+
+
+class _AdsDropGuide(QtWidgets.QWidget):
+    """Application-owned five-point guide over QtADS's active drop overlay."""
+
+    def __init__(self, overlays, parent=None):
+        flags = (
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        super().__init__(None, flags)
+        self._overlays = tuple(overlays)
+        self._visibleOverlays = []
+        self.setWindowTitle("PyzoDockDropGuide")
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._refresh)
+
+    def sync(self):
+        if not self._timer.isActive():
+            self._timer.start()
+        self._refresh()
+
+    def hideGuide(self):
+        self._timer.stop()
+        self._visibleOverlays = []
+        self.hide()
+
+    def _refresh(self):
+        visible = [overlay for overlay in self._overlays if overlay.isVisible()]
+        if not visible:
+            self.hideGuide()
+            return
+        self._visibleOverlays = visible
+        geometry = visible[0].geometry()
+        for overlay in visible[1:]:
+            geometry = geometry.united(overlay.geometry())
+        if self.geometry() != geometry:
+            self.setGeometry(geometry)
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.update()
+
+    def paintEvent(self, event):
+        import PySide6QtAds as QtAds
+
+        if not self._visibleOverlays:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+
+        # QtADS owns a container overlay followed by a dock-area overlay. Draw
+        # both at once: amber outer targets split the whole container, while
+        # blue inner targets split/tab within the hovered dock area.
+        container_overlay, dock_area_overlay = self._overlays
+        if container_overlay in self._visibleOverlays:
+            self._paintTargets(
+                painter,
+                container_overlay,
+                stride=0,
+                accent=QtGui.QColor(255, 174, 66),
+                outer=True,
+                QtAds=QtAds,
+            )
+        if dock_area_overlay in self._visibleOverlays:
+            self._paintTargets(
+                painter,
+                dock_area_overlay,
+                stride=45,
+                accent=QtGui.QColor(68, 177, 255),
+                outer=False,
+                QtAds=QtAds,
+            )
+
+    def _paintTargets(self, painter, overlay, stride, accent, outer, QtAds):
+        size = 45
+        overlay_rect = QtCore.QRect(overlay.geometry())
+        overlay_rect.translate(-self.geometry().topLeft())
+        center = overlay_rect.center()
+        if outer:
+            margin = 4
+            centers = {
+                QtAds.CenterDockWidgetArea: center,
+                QtAds.LeftDockWidgetArea: QtCore.QPoint(
+                    overlay_rect.left() + margin + size // 2,
+                    center.y(),
+                ),
+                QtAds.RightDockWidgetArea: QtCore.QPoint(
+                    overlay_rect.right() - margin - size // 2,
+                    center.y(),
+                ),
+                QtAds.TopDockWidgetArea: QtCore.QPoint(
+                    center.x(),
+                    overlay_rect.top() + margin + size // 2,
+                ),
+                QtAds.BottomDockWidgetArea: QtCore.QPoint(
+                    center.x(),
+                    overlay_rect.bottom() - margin - size // 2,
+                ),
+            }
+        else:
+            centers = {
+                QtAds.CenterDockWidgetArea: center,
+                QtAds.LeftDockWidgetArea: center + QtCore.QPoint(-stride, 0),
+                QtAds.RightDockWidgetArea: center + QtCore.QPoint(stride, 0),
+                QtAds.TopDockWidgetArea: center + QtCore.QPoint(0, -stride),
+                QtAds.BottomDockWidgetArea: center + QtCore.QPoint(0, stride),
+            }
+        allowed = overlay.allowedAreas()
+        hovered = overlay.dropAreaUnderCursor()
+
+        for area, target_center in centers.items():
+            if not bool(allowed & area):
+                continue
+            rect = QtCore.QRect(0, 0, size, size)
+            rect.moveCenter(target_center)
+            active = area == hovered
+            fill = QtGui.QColor(42, 54, 68, 245)
+            border = accent if active or outer else QtGui.QColor(190, 205, 220)
+            painter.setPen(QtGui.QPen(border, 3 if active else 2))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, 7, 7)
+            self._paintDirection(painter, rect, area, border, outer, QtAds)
+
+    def _paintDirection(self, painter, rect, area, color, outer, QtAds):
+        painter.setPen(
+            QtGui.QPen(
+                color,
+                3,
+                QtCore.Qt.PenStyle.SolidLine,
+                QtCore.Qt.PenCapStyle.RoundCap,
+                QtCore.Qt.PenJoinStyle.RoundJoin,
+            )
+        )
+        c = rect.center()
+        if area == QtAds.CenterDockWidgetArea:
+            inner = rect.adjusted(11, 12, -11, -10)
+            painter.drawRoundedRect(inner, 2, 2)
+            painter.drawLine(
+                inner.topLeft() + QtCore.QPoint(0, 6),
+                inner.topRight() + QtCore.QPoint(0, 6),
+            )
+            return
+        delta = {
+            QtAds.LeftDockWidgetArea: QtCore.QPoint(-9, 0),
+            QtAds.RightDockWidgetArea: QtCore.QPoint(9, 0),
+            QtAds.TopDockWidgetArea: QtCore.QPoint(0, -9),
+            QtAds.BottomDockWidgetArea: QtCore.QPoint(0, 9),
+        }[area]
+        tip = c + delta
+        if delta.x():
+            wing1 = tip - delta + QtCore.QPoint(0, -7)
+            wing2 = tip - delta + QtCore.QPoint(0, 7)
+        else:
+            wing1 = tip - delta + QtCore.QPoint(-7, 0)
+            wing2 = tip - delta + QtCore.QPoint(7, 0)
+        painter.drawLine(wing1, tip)
+        painter.drawLine(tip, wing2)
+        if outer:
+            second_tip = tip - delta
+            painter.drawLine(wing1 - delta, second_tip)
+            painter.drawLine(second_tip, wing2 - delta)
+
+
+class _AdsDropGuideController(QtCore.QObject):
+    def __init__(self, overlays, parent=None):
+        super().__init__(parent)
+        self._overlays = tuple(overlays)
+        self._guide = _AdsDropGuide(self._overlays)
+
+    def eventFilter(self, watched, event):
+        event_type = event.type()
+        if watched in self._overlays and event_type in {
+            QtCore.QEvent.Type.Show,
+            QtCore.QEvent.Type.Hide,
+        }:
+            # Resolve current visibility after QtADS completes this event.
+            # The callback does not retain the event's target, so stale show
+            # and hide events cannot move the guide to an obsolete geometry.
+            QtCore.QTimer.singleShot(0, self._guide.sync)
+        return False
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
@@ -195,6 +452,22 @@ class MainWindow(QtWidgets.QMainWindow):
         # Create the docking manager. QtADS owns the central widget slot while
         # Pyzo continues to own the EditorTabs instance and its public API.
         self._dockManager = QtAds.CDockManager(self)
+        overlays = (
+            self._dockManager.containerOverlay(),
+            self._dockManager.dockAreaOverlay(),
+        )
+        self._adsDropGuideController = _AdsDropGuideController(overlays, self)
+        for overlay in overlays:
+            overlay.installEventFilter(self._adsDropGuideController)
+        trace_path = os.environ.get("PYZO_ADS_TRACE")
+        if trace_path:
+            self._adsTrace = _AdsTraceFilter(trace_path, self)
+            self._traceAdsWidget(self._dockManager)
+            self._traceAdsWidget(self._dockManager.containerOverlay())
+            self._traceAdsWidget(self._dockManager.dockAreaOverlay())
+            self._dockManager.floatingWidgetCreated.connect(self._traceAdsWidget)
+            with open(trace_path, "a", encoding="utf-8") as trace:
+                trace.write("--- ADS trace installed ---\n")
         self._dockManager.focusedDockWidgetChanged.connect(
             self._onFocusedDockWidgetChanged
         )
@@ -286,6 +559,54 @@ class MainWindow(QtWidgets.QMainWindow):
             assert isinstance(file_browser_dock, QtAds.CDockWidget)
             pyzo.toolManager.closeTool("pyzofilebrowser")
             print("Pyzo ADS tool-container smoke test passed")
+            container_overlay = self._dockManager.containerOverlay()
+            dock_area_overlay = self._dockManager.dockAreaOverlay()
+            editor_area = self._editorDock.dockAreaWidget()
+            container_overlay.setAllowedAreas(
+                QtAds.TopDockWidgetArea
+                | QtAds.RightDockWidgetArea
+                | QtAds.BottomDockWidgetArea
+                | QtAds.LeftDockWidgetArea
+            )
+            dock_area_overlay.setAllowedAreas(
+                QtAds.TopDockWidgetArea
+                | QtAds.RightDockWidgetArea
+                | QtAds.BottomDockWidgetArea
+                | QtAds.LeftDockWidgetArea
+                | QtAds.CenterDockWidgetArea
+            )
+            container_overlay.showOverlay(
+                self._dockManager,
+                self._dockManager.mapToGlobal(self._dockManager.rect().center()),
+            )
+            dock_area_overlay.showOverlay(
+                editor_area,
+                editor_area.mapToGlobal(editor_area.rect().center()),
+            )
+            QtWidgets.QApplication.processEvents()
+            guide_image = self._adsDropGuideController._guide.grab().toImage()
+            dock_area_center = (
+                dock_area_overlay.geometry().center()
+                - self._adsDropGuideController._guide.geometry().topLeft()
+            )
+            assert guide_image.pixelColor(dock_area_center).alpha() > 0
+            assert container_overlay in (
+                self._adsDropGuideController._guide._visibleOverlays
+            )
+            has_outer_accent = any(
+                color.alpha() > 0
+                and color.red() > 220
+                and 120 < color.green() < 220
+                and color.blue() < 120
+                for y in range(guide_image.height())
+                for x in range(guide_image.width())
+                for color in (guide_image.pixelColor(x, y),)
+            )
+            assert has_outer_accent
+            container_overlay.hideOverlay()
+            dock_area_overlay.hideOverlay()
+            self._adsDropGuideController._guide.hideGuide()
+            print("Pyzo ADS dual-layer drop-guide paint smoke test passed")
         pyzo.shells.addContextMenu()
 
         # Load tools
@@ -300,6 +621,10 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.editors.setActiveGroup(self._primaryEditors)
         elif dock_widget is self._secondaryEditorDock:
             pyzo.editors.setActiveGroup(self._secondaryEditors)
+
+    def _traceAdsWidget(self, widget):
+        if hasattr(self, "_adsTrace") and widget is not None:
+            widget.installEventFilter(self._adsTrace)
 
     def setMainTitle(self, path=None):
         """Set the title of the main window, by giving a file path."""
