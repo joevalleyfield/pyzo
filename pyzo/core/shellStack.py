@@ -153,6 +153,11 @@ class ShellStackWidget(QtWidgets.QWidget):
         """Remove an existing shell from the widget"""
         self._stack.removeWidget(shell)
 
+    def dispose(self):
+        """Stop host-owned timers before its ADS dock is destroyed."""
+        self._shellButton._elapsedTimesTimer.stop()
+        self._shellButton._iconMaker._timer.stop()
+
     def onCurrentChanged(self, index):
         """When another shell is selected, update some things."""
 
@@ -172,7 +177,7 @@ class ShellStackWidget(QtWidgets.QWidget):
         # Keep shell button and its menu up-to-date
         self._shellButton.updateShellMenu(shell)
 
-        if shell is self.getCurrentShell():  # can be None
+        if shell is pyzo.shells.getCurrentShell():  # can be None
             # Update application icon
             if shell and shell._state in ["Busy"]:
                 pyzo.main.setWindowIcon(pyzo.iconRunning)
@@ -186,7 +191,7 @@ class ShellStackWidget(QtWidgets.QWidget):
         by onCurrentChanged. Sets the debug button.
         """
 
-        if shell is self.getCurrentShell():
+        if shell is pyzo.shells.getCurrentShell():
             # Update debug info
             if shell and shell._debugState:
                 info = shell._debugState

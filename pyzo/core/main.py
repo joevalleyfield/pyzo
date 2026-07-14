@@ -424,6 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
         from pyzo.core.editorTabs import EditorTabs
         from pyzo.core.editorGroups import install_editor_group_manager
         from pyzo.core.shellStack import ShellStackWidget
+        from pyzo.core.shellGroups import install_shell_group_manager
         from pyzo.core import codeparser
         from pyzo.core.history import CommandHistory
         from pyzo.tools import ToolManager
@@ -471,49 +472,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dockManager.focusedDockWidgetChanged.connect(
             self._onFocusedDockWidgetChanged
         )
+        self._QtAds = QtAds
+        self._EditorTabs = EditorTabs
+        self._ShellStackWidget = ShellStackWidget
+        self._editorHosts = {}
+        self._shellHosts = {}
+        self._editorHostSerial = 0
+        self._shellHostSerial = 0
+        self._menusReady = False
 
-        # Create editor stack and host it as a central dock widget
-        self._primaryEditors = EditorTabs(self)
+        # There is one legacy host per document/interpreter. Its internal
+        # selector is hidden; QtADS is the sole visible grouping layer.
         pyzo.editors = install_editor_group_manager(
-            [self._primaryEditors], self
+            parent=self,
+            group_factory=self._createEditorHost,
+            group_remover=self._removeEditorHost,
         )
-        self._editorDock = QtAds.CDockWidget(self._dockManager, "Editors")
-        self._editorDock.setObjectName("pyzo-editors")
-        self._editorDock.setWidget(self._primaryEditors)
-        self._dockManager.addDockWidget(QtAds.CenterDockWidgetArea, self._editorDock)
-
-        # Create a second editor group as the first integration slice. The
-        # original group remains the global pyzo.editors service for now; this
-        # deliberately exposes the places that must become group-aware.
-        self._secondaryEditors = EditorTabs(self)
-        pyzo.editors.addGroup(self._secondaryEditors)
-        self._secondaryEditors.setObjectName("pyzo-editors-secondary")
-        self._secondaryEditorDock = QtAds.CDockWidget(
-            self._dockManager, "Editors 2"
-        )
-        self._secondaryEditorDock.setObjectName("pyzo-editors-secondary-dock")
-        self._secondaryEditorDock.setWidget(self._secondaryEditors)
-        self._dockManager.addDockWidget(
-            QtAds.RightDockWidgetArea,
-            self._secondaryEditorDock,
-            self._editorDock.dockAreaWidget(),
-        )
-
-        # Create an ADS dock for the shell. The shell widget itself remains
-        # unchanged; only its layout container moves into the unified manager.
-        self._shellDock = dock = QtAds.CDockWidget(self._dockManager, "Shell")
-        DWF = dock.DockWidgetFeature
-        if pyzo.config.settings.allowFloatingShell:
-            dock.setFeatures(DWF.DockWidgetMovable | DWF.DockWidgetFloatable)
-        else:
-            dock.setFeatures(DWF.DockWidgetMovable)
-        dock.setObjectName("shells")
-        dock.setWindowTitle("Shells")
-        self._dockManager.addDockWidget(QtAds.RightDockWidgetArea, dock)
-
-        # Create shell stack
-        pyzo.shells = ShellStackWidget(self)
-        dock.setWidget(pyzo.shells)
+        self._primaryEditors = pyzo.editors.createGroup()
+        self._editorDock = self._editorHosts[self._primaryEditors]
+        install_shell_group_manager(self._createShellHost, self)
 
         # Initialize command history
         pyzo.command_history = CommandHistory("command_history.py")
@@ -531,28 +508,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
         pyzo.keyMapper = menu.KeyMapper()
         menu.buildMenus(self.menuBar())
+        self._menusReady = True
 
-        # Add the context menu to the editor
-        self._primaryEditors.addContextMenu()
-        self._secondaryEditors.addContextMenu()
-        self._primaryEditors.newFile()
-        self._secondaryEditors.newFile()
+        # Add context menus now that their actions have been constructed.
+        for editor_host in pyzo.editors.groups:
+            editor_host.addContextMenu()
+        pyzo.shells.addContextMenu()
         if "--test" in sys.argv:
-            moved_editor = pyzo.editors.moveCurrentEditorToGroup(self._primaryEditors)
-            assert moved_editor is not None
-            moved_back_editor = pyzo.editors.moveCurrentEditorToGroup(
-                self._secondaryEditors
-            )
-            assert moved_back_editor is moved_editor
-            print("Pyzo editor-group move smoke test passed")
-            # Exercise the debugger-facing facade: source loading follows the
-            # active area and indicators are broadcast to every area.
+            first_item = pyzo.editors.newFile()
+            second_item = pyzo.editors.newFile()
+            assert first_item.editor is not second_item.editor
+            assert len(pyzo.editors.groups) == 2
+            assert all(group._tabs.count() == 1 for group in pyzo.editors.groups)
+            assert all(group._tabs.tabBar().isHidden() for group in pyzo.editors.groups)
+            print("Pyzo independent editor-dock smoke test passed")
+            # Exercise the debugger-facing facade: source loading gets its own
+            # document dock and indicators are broadcast to every document.
             debug_item = pyzo.editors.loadFile(__file__, ignoreFail=True)
             assert debug_item is not None
-            assert debug_item.editor in self._secondaryEditors
+            assert len(pyzo.editors.groups) == 3
+            assert all(group._tabs.count() == 1 for group in pyzo.editors.groups)
             pyzo.editors.setDebugLineIndicators((__file__, 1))
             assert debug_item.editor._debugLineIndicator == 1
-            print("Pyzo debugger editor-group routing smoke test passed")
+            pyzo.editors.closeFile(second_item.editor)
+            assert len(pyzo.editors.groups) == 2
+            assert second_item.editor not in tuple(pyzo.editors)
+            print("Pyzo debugger document-dock routing smoke test passed")
             pyzo.toolManager.loadTool("pyzofilebrowser")
             file_browser_dock = pyzo.toolManager._activeTools.get("pyzofilebrowser")
             assert file_browser_dock is not None
@@ -607,8 +588,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dock_area_overlay.hideOverlay()
             self._adsDropGuideController._guide.hideGuide()
             print("Pyzo ADS dual-layer drop-guide paint smoke test passed")
-        pyzo.shells.addContextMenu()
-
+            callLater(self._testIndependentShellDocks)
         # Load tools
         if pyzo.config.state.newUser and not pyzo.config.state.loadedTools:
             pyzo.toolManager.loadTool("pyzosourcestructure")
@@ -617,10 +597,104 @@ class MainWindow(QtWidgets.QMainWindow):
             self.restoreTools()
 
     def _onFocusedDockWidgetChanged(self, dock_widget):
-        if dock_widget is self._editorDock:
-            pyzo.editors.setActiveGroup(self._primaryEditors)
-        elif dock_widget is self._secondaryEditorDock:
-            pyzo.editors.setActiveGroup(self._secondaryEditors)
+        for host, dock in self._editorHosts.items():
+            if dock_widget is dock:
+                pyzo.editors.setActiveGroup(host)
+                return
+        for host, dock in self._shellHosts.items():
+            if dock_widget is dock:
+                pyzo.shells.setActiveHost(host)
+                return
+
+    def _createEditorHost(self):
+        self._editorHostSerial += 1
+        host = self._EditorTabs(self)
+        host.setObjectName(f"pyzo-editor-host-{self._editorHostSerial}")
+        dock = self._QtAds.CDockWidget(self._dockManager, "Untitled")
+        dock.setObjectName(f"pyzo-editor-dock-{self._editorHostSerial}")
+        dock.setWidget(host)
+        active = getattr(pyzo, "editors", None)
+        active_group = getattr(active, "activeGroup", None)
+        active_dock = self._editorHosts.get(active_group)
+        if active_dock is None:
+            self._dockManager.addDockWidget(self._QtAds.CenterDockWidgetArea, dock)
+        else:
+            self._dockManager.addDockWidget(
+                self._QtAds.CenterDockWidgetArea,
+                dock,
+                active_dock.dockAreaWidget(),
+            )
+        self._editorHosts[host] = dock
+        host._tabs.fileTabsChanged.connect(
+            lambda host=host: self._updateEditorDockTitle(host)
+        )
+        if self._menusReady:
+            host.addContextMenu()
+        return host
+
+    def _updateEditorDockTitle(self, host):
+        dock = self._editorHosts.get(host)
+        if dock is None:
+            return
+        item = host._tabs.currentItem()
+        title = item.name if item is not None else "Untitled"
+        if item is not None and item.dirty:
+            title += " *"
+        dock.setWindowTitle(title)
+
+    def _removeEditorHost(self, host):
+        dock = self._editorHosts.pop(host, None)
+        if dock is not None:
+            self._dockManager.removeDockWidget(dock)
+            dock.deleteLater()
+
+    def _createShellHost(self):
+        self._shellHostSerial += 1
+        host = self._ShellStackWidget(self)
+        host.setObjectName(f"pyzo-shell-host-{self._shellHostSerial}")
+        dock = self._QtAds.CDockWidget(self._dockManager, "Shell")
+        dock.setObjectName(f"pyzo-shell-dock-{self._shellHostSerial}")
+        features = dock.DockWidgetFeature
+        if pyzo.config.settings.allowFloatingShell:
+            dock.setFeatures(features.DockWidgetMovable | features.DockWidgetFloatable)
+        else:
+            dock.setFeatures(features.DockWidgetMovable)
+        dock.setWidget(host)
+        self._dockManager.addDockWidget(self._QtAds.RightDockWidgetArea, dock)
+        self._shellHosts[host] = dock
+        host.currentShellStateChanged.connect(
+            lambda host=host: self._updateShellDockTitle(host)
+        )
+        return host
+
+    def _updateShellDockTitle(self, host):
+        from pyzo.core.shellStack import shellTitle
+
+        shell = host.getCurrentShell()
+        dock = self._shellHosts.get(host)
+        if shell is not None and dock is not None:
+            dock.setWindowTitle(shellTitle(shell))
+
+    def _testIndependentShellDocks(self):
+        """Exercise shell ownership after the deferred default shell exists."""
+        first_shell = pyzo.shells.getCurrentShell()
+        assert first_shell is not None
+        second_shell = pyzo.shells.addShell()
+        assert second_shell is not first_shell
+        assert len(pyzo.shells.hosts) == 2
+        assert all(len(host.getShells()) == 1 for host in pyzo.shells.hosts)
+        assert pyzo.shells.getCurrentShell() is second_shell
+        second_shell.closeShell()
+        assert len(pyzo.shells.hosts) == 1
+        assert pyzo.shells.getCurrentShell() is first_shell
+        print("Pyzo independent shell-dock smoke test passed")
+
+    def removeShellHost(self, host):
+        dock = self._shellHosts.pop(host, None)
+        if dock is not None:
+            host.dispose()
+            self._dockManager.removeDockWidget(dock)
+            dock.deleteLater()
 
     def _traceAdsWidget(self, widget):
         if hasattr(self, "_adsTrace") and widget is not None:

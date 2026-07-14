@@ -1071,6 +1071,9 @@ class EditorTabs(QtWidgets.QWidget):
 
         # create tab widget
         self._tabs = FileTabWidget(self)
+        # QtADS is the visible document tab/split layer. Each EditorTabs host
+        # contains one document, so its legacy tab bar would only be nesting.
+        self._tabs.tabBar().hide()
         self._tabs.tabCloseRequested.connect(self.closeFile)
         self._tabs.currentChanged.connect(self.onCurrentChanged)
 
@@ -1310,7 +1313,7 @@ class EditorTabs(QtWidgets.QWidget):
 
         # load
         for filename in filenames:
-            self.loadFile(filename)
+            pyzo.editors.loadFile(filename)
 
     def openDir(self):
         """Create a dialog for the user to select a directory."""
