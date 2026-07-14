@@ -10,6 +10,8 @@ import os
 import sys
 import time
 import base64
+import gc
+import weakref
 from queue import Queue, Empty
 
 import pyzo
@@ -22,6 +24,164 @@ from pyzo.util import paths
 from pyzo.util import zon as ssdf  # zon is ssdf-light
 from pyzo import translate
 from pyzo.core.views import ViewManager
+
+
+class _AdsWindowOrderTracker(QtCore.QObject):
+    """Freeze the real dock-window activation order for each ADS drag.
+
+    QtADS gives its main dock manager a permanent z-order of zero, which
+    incorrectly lets a background floating container beat a foreground main
+    window on macOS. Floating-to-floating order remains owned by QtADS; this
+    tracker only determines whether the main window must outrank all of them.
+    """
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self._mainWindow = main_window
+        self._dockManager = None
+        self._windowOrder = []
+        self._trackedWindowIds = set()
+        self._dragSnapshot = None
+        self._dragActive = False
+        self._tracePath = None
+        self._lastTraceState = None
+        self._recordWindow(main_window)
+        QtWidgets.QApplication.instance().installEventFilter(self)
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._syncDragState)
+        self._timer.start()
+
+    def setDockManager(self, dock_manager):
+        self._dockManager = dock_manager
+
+    def setTracePath(self, trace_path):
+        self._tracePath = trace_path
+
+    def eventFilter(self, watched, event):
+        event_type = event.type()
+        if event_type == QtCore.QEvent.Type.WindowActivate:
+            window = self._dockWindow(watched)
+            self._syncDragState()
+            if window is not None:
+                self._handleWindowActivation(window)
+        return False
+
+    def _dockWindow(self, watched):
+        if not isinstance(watched, QtWidgets.QWidget):
+            return None
+        window = watched.window()
+        if window is self._mainWindow:
+            return window
+        if type(window).__name__ == "CFloatingDockContainer":
+            return window
+        return None
+
+    def _recordWindow(self, window):
+        live = [item for item in self._liveWindowOrder() if item is not window]
+        live.append(window)
+        self._windowOrder = live
+        window_id = id(window)
+        if window_id not in self._trackedWindowIds and hasattr(window, "destroyed"):
+            self._trackedWindowIds.add(window_id)
+            window.destroyed.connect(
+                lambda _object=None, window_id=window_id: self._forgetWindowId(
+                    window_id
+                )
+            )
+
+    def _forgetWindowId(self, window_id):
+        self._trackedWindowIds.discard(window_id)
+
+        def without_window(order):
+            if order is None:
+                return None
+            return tuple(window for window in order if id(window) != window_id)
+
+        self._windowOrder = [
+            window for window in self._windowOrder if id(window) != window_id
+        ]
+        self._dragSnapshot = without_window(self._dragSnapshot)
+
+    def _handleWindowActivation(self, window):
+        if not self._dragActive:
+            self._recordWindow(window)
+
+    def _liveWindowOrder(self):
+        return list(self._windowOrder)
+
+    def _activeSourceWindows(self):
+        if self._dockManager is None:
+            return set()
+        return {
+            floating
+            for floating in self._dockManager.floatingWidgets()
+            if floating is not None and floating.isDraggingActive()
+        }
+
+    def _previewDragActive(self):
+        return any(
+            type(window).__name__ == "CFloatingDragPreview" and window.isVisible()
+            for window in QtWidgets.QApplication.topLevelWidgets()
+        )
+
+    def _syncDragState(self):
+        active = bool(self._activeSourceWindows()) or self._previewDragActive()
+        self._setDragActive(active)
+
+    def _setDragActive(self, active):
+        if active and not self._dragActive:
+            self._dragSnapshot = tuple(self._liveWindowOrder())
+        elif not active and self._dragActive:
+            self._dragSnapshot = None
+        self._dragActive = active
+
+    @staticmethod
+    def _foregroundEligibleWindow(window_order, source_windows):
+        for window in reversed(window_order):
+            if window in source_windows:
+                continue
+            try:
+                visible = window.isVisible()
+            except (AttributeError, RuntimeError):
+                visible = True
+            if visible:
+                return window
+        return None
+
+    def mainWindowLeads(self):
+        self._syncDragState()
+        order = self._dragSnapshot or tuple(self._liveWindowOrder())
+        sources = self._activeSourceWindows()
+        foreground = self._foregroundEligibleWindow(order, sources)
+        main_leads = foreground is self._mainWindow
+        trace_state = (
+            self._dragActive,
+            tuple(id(window) for window in order),
+            tuple(sorted(id(window) for window in sources)),
+            id(foreground) if foreground is not None else None,
+            main_leads,
+        )
+        if self._tracePath and trace_state != self._lastTraceState:
+            self._lastTraceState = trace_state
+            describe = lambda window: (
+                f"{type(window).__name__}:{window.windowTitle()}"
+            )
+            with open(self._tracePath, "a", encoding="utf-8") as trace:
+                trace.write(
+                    "{:.6f} order drag={} cursor=({}, {}) order={} "
+                    "sources={} foreground={} main_leads={}\n".format(
+                        time.monotonic(),
+                        self._dragActive,
+                        QtGui.QCursor.pos().x(),
+                        QtGui.QCursor.pos().y(),
+                        [describe(window) for window in order],
+                        [describe(window) for window in sources],
+                        describe(foreground) if foreground is not None else None,
+                        main_leads,
+                    )
+                )
+        return main_leads
 
 
 class _AdsTraceFilter(QtCore.QObject):
@@ -112,21 +272,26 @@ class _AdsDropGuide(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._timer = QtCore.QTimer(self)
-        self._timer.setInterval(33)
+        self._timer.setInterval(16)
         self._timer.timeout.connect(self._refresh)
 
-    def sync(self):
+    def sync(self, shown_overlay=None):
         if not self._timer.isActive():
             self._timer.start()
-        self._refresh()
+        self._refresh(shown_overlay)
 
     def hideGuide(self):
         self._timer.stop()
         self._visibleOverlays = []
         self.hide()
 
-    def _refresh(self):
+    def _refresh(self, shown_overlay=None):
         visible = [overlay for overlay in self._overlays if overlay.isVisible()]
+        # A Show event reaches the event filter immediately before Qt marks
+        # the overlay visible. Include that known-current target so the guide
+        # can move to an overlapping floating window in the same frame.
+        if shown_overlay is not None and shown_overlay not in visible:
+            visible.append(shown_overlay)
         if not visible:
             self.hideGuide()
             return
@@ -274,6 +439,8 @@ class _AdsDropGuideController(QtCore.QObject):
             QtCore.QEvent.Type.Show,
             QtCore.QEvent.Type.Hide,
         }:
+            if event_type == QtCore.QEvent.Type.Show:
+                self._guide.sync(watched)
             # Resolve current visibility after QtADS completes this event.
             # The callback does not retain the event's target, so stale show
             # and hide events cannot move the guide to an obsolete geometry.
@@ -450,9 +617,21 @@ class MainWindow(QtWidgets.QMainWindow):
         config_flag = QtAds.CDockManager.eConfigFlag
         QtAds.CDockManager.setConfigFlag(config_flag.EqualSplitOnInsertion, True)
 
-        # Create the docking manager. QtADS owns the central widget slot while
-        # Pyzo continues to own the EditorTabs instance and its public API.
-        self._dockManager = QtAds.CDockManager(self)
+        # Create the docking manager. QtADS normally hard-codes the main
+        # container's z-order to zero, allowing a background floating window
+        # to steal an overlapping drop. Preserve QtADS's floating order while
+        # elevating the main container only when it was the foremost eligible
+        # dock window at drag start.
+        self._adsWindowOrder = _AdsWindowOrderTracker(self)
+
+        class _PyzoDockManager(QtAds.CDockManager):
+            def zOrderIndex(manager_self):
+                if self._adsWindowOrder.mainWindowLeads():
+                    return 0xFFFFFFFF
+                return super().zOrderIndex()
+
+        self._dockManager = _PyzoDockManager(self)
+        self._adsWindowOrder.setDockManager(self._dockManager)
         overlays = (
             self._dockManager.containerOverlay(),
             self._dockManager.dockAreaOverlay(),
@@ -463,6 +642,7 @@ class MainWindow(QtWidgets.QMainWindow):
         trace_path = os.environ.get("PYZO_ADS_TRACE")
         if trace_path:
             self._adsTrace = _AdsTraceFilter(trace_path, self)
+            self._adsWindowOrder.setTracePath(trace_path)
             self._traceAdsWidget(self._dockManager)
             self._traceAdsWidget(self._dockManager.containerOverlay())
             self._traceAdsWidget(self._dockManager.dockAreaOverlay())
@@ -515,6 +695,7 @@ class MainWindow(QtWidgets.QMainWindow):
             editor_host.addContextMenu()
         pyzo.shells.addContextMenu()
         if "--test" in sys.argv:
+            self._testAdsWindowOrderModel()
             first_item = pyzo.editors.newFile()
             second_item = pyzo.editors.newFile()
             assert first_item.editor is not second_item.editor
@@ -564,6 +745,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 editor_area,
                 editor_area.mapToGlobal(editor_area.rect().center()),
             )
+            expected_guide_geometry = container_overlay.geometry().united(
+                dock_area_overlay.geometry()
+            )
+            assert (
+                self._adsDropGuideController._guide.geometry()
+                == expected_guide_geometry
+            )
             QtWidgets.QApplication.processEvents()
             guide_image = self._adsDropGuideController._guide.grab().toImage()
             dock_area_center = (
@@ -605,6 +793,94 @@ class MainWindow(QtWidgets.QMainWindow):
             if dock_widget is dock:
                 pyzo.shells.setActiveHost(host)
                 return
+
+    def _testAdsWindowOrderModel(self):
+        """Assert every ordering state introduced by the macOS fix."""
+
+        class Window:
+            def __init__(self, visible=True):
+                self._visible = visible
+
+            def isVisible(self):
+                return self._visible
+
+        foreground = _AdsWindowOrderTracker._foregroundEligibleWindow
+        main = Window()
+        floating_back = Window()
+        floating_front = Window()
+        hidden = Window(False)
+
+        assert foreground([], set()) is None
+        assert foreground([main], set()) is main
+        assert foreground([floating_front], set()) is floating_front
+        assert foreground([floating_back, main], set()) is main
+        assert foreground([main, floating_front], set()) is floating_front
+        assert (
+            foreground([floating_back, main, floating_front], set())
+            is floating_front
+        )
+        assert (
+            foreground([floating_back, main, floating_front], {floating_front})
+            is main
+        )
+        assert foreground([main, hidden], set()) is main
+
+        tracker = self._adsWindowOrder
+        saved_order = list(tracker._windowOrder)
+        saved_snapshot = tracker._dragSnapshot
+        saved_active = tracker._dragActive
+        saved_tracked_ids = set(tracker._trackedWindowIds)
+        try:
+            tracker._dragActive = True
+            tracker._handleWindowActivation(floating_front)
+            assert tracker._windowOrder == saved_order
+            tracker._setDragActive(False)
+            assert tracker._dragSnapshot is None
+            tracker._handleWindowActivation(floating_front)
+            assert tracker._liveWindowOrder()[-1] is floating_front
+            tracker._setDragActive(True)
+            assert tracker._dragSnapshot[-1] is floating_front
+            # A pane drag leaves its containing window eligible, while a
+            # whole-floating-window drag excludes only that moving window.
+            assert foreground(tracker._dragSnapshot, set()) is floating_front
+            assert (
+                foreground(tracker._dragSnapshot, {floating_front})
+                is tracker._mainWindow
+            )
+            tracker._setDragActive(False)
+
+            retained_window = QtWidgets.QWidget()
+            retained_window_id = id(retained_window)
+            retained_window_ref = weakref.ref(retained_window)
+            tracker._recordWindow(retained_window)
+            del retained_window
+            gc.collect()
+            assert retained_window_ref() is not None
+            assert any(
+                id(window) == retained_window_id
+                for window in tracker._liveWindowOrder()
+            )
+            retained_window_ref().deleteLater()
+            QtCore.QCoreApplication.sendPostedEvents(
+                None, QtCore.QEvent.Type.DeferredDelete
+            )
+            assert all(
+                id(window) != retained_window_id
+                for window in tracker._liveWindowOrder()
+            )
+
+            tracker._handleWindowActivation(floating_front)
+            live_at_drag_start = tuple(tracker._liveWindowOrder())
+            tracker._setDragActive(True)
+            assert tracker._dragSnapshot == live_at_drag_start
+            tracker._setDragActive(False)
+            assert tracker._dragSnapshot is None
+        finally:
+            tracker._windowOrder = saved_order
+            tracker._dragSnapshot = saved_snapshot
+            tracker._dragActive = saved_active
+            tracker._trackedWindowIds = saved_tracked_ids
+        print("Pyzo ADS foreground-window ordering smoke test passed")
 
     def _createEditorHost(self):
         self._editorHostSerial += 1
