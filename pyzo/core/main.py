@@ -186,34 +186,15 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.parser = codeparser.Parser()
             pyzo.parser.start()
 
-        # Configure ADS drag feedback before creating the manager. The dynamic
-        # preview and content pixmap make the overlay's target easier to read;
-        # focus highlighting and equal split sizing make editor-group changes
-        # easier to understand.
+        # Keep QtADS drag feedback at its library defaults, matching the
+        # standalone spike. The only integration-specific setting here is
+        # equal split sizing for newly inserted editor areas.
         config_flag = QtAds.CDockManager.eConfigFlag
-        for flag in (
-            config_flag.DragPreviewIsDynamic,
-            config_flag.DragPreviewShowsContentPixmap,
-            config_flag.DragPreviewHasWindowFrame,
-            config_flag.FocusHighlighting,
-            config_flag.EqualSplitOnInsertion,
-        ):
-            QtAds.CDockManager.setConfigFlag(flag, True)
+        QtAds.CDockManager.setConfigFlag(config_flag.EqualSplitOnInsertion, True)
 
         # Create the docking manager. QtADS owns the central widget slot while
         # Pyzo continues to own the EditorTabs instance and its public API.
         self._dockManager = QtAds.CDockManager(self)
-        # QtADS creates the five-point drop overlays as top-level tool windows.
-        # Keep them above the drag preview on macOS, where the default tool
-        # window stacking can otherwise leave the cross behind that preview.
-        for overlay in (
-            self._dockManager.containerOverlay(),
-            self._dockManager.dockAreaOverlay(),
-        ):
-            overlay.setWindowFlag(
-                QtCore.Qt.WindowType.WindowStaysOnTopHint,
-                True,
-            )
         self._dockManager.focusedDockWidgetChanged.connect(
             self._onFocusedDockWidgetChanged
         )
