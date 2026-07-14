@@ -165,10 +165,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _populate(self):
         # Delayed imports
         from pyzo.core.editorTabs import EditorTabs
+        from pyzo.core.editorGroups import install_editor_group_manager
         from pyzo.core.shellStack import ShellStackWidget
         from pyzo.core import codeparser
         from pyzo.core.history import CommandHistory
         from pyzo.tools import ToolManager
+
+        try:
+            import PySide6QtAds as QtAds
+        except ImportError as err:
+            raise RuntimeError(
+                "The docking integration requires the PySide6QtAds package"
+            ) from err
 
         # Instantiate tool manager
         pyzo.toolManager = ToolManager()
@@ -178,12 +186,68 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.parser = codeparser.Parser()
             pyzo.parser.start()
 
-        # Create editor stack and make the central widget
-        pyzo.editors = EditorTabs(self)
-        self.setCentralWidget(pyzo.editors)
+        # Configure ADS drag feedback before creating the manager. The dynamic
+        # preview and content pixmap make the overlay's target easier to read;
+        # focus highlighting and equal split sizing make editor-group changes
+        # easier to understand.
+        config_flag = QtAds.CDockManager.eConfigFlag
+        for flag in (
+            config_flag.DragPreviewIsDynamic,
+            config_flag.DragPreviewShowsContentPixmap,
+            config_flag.DragPreviewHasWindowFrame,
+            config_flag.FocusHighlighting,
+            config_flag.EqualSplitOnInsertion,
+        ):
+            QtAds.CDockManager.setConfigFlag(flag, True)
 
-        # Create floater for shell
-        self._shellDock = dock = QtWidgets.QDockWidget(self)
+        # Create the docking manager. QtADS owns the central widget slot while
+        # Pyzo continues to own the EditorTabs instance and its public API.
+        self._dockManager = QtAds.CDockManager(self)
+        # QtADS creates the five-point drop overlays as top-level tool windows.
+        # Keep them above the drag preview on macOS, where the default tool
+        # window stacking can otherwise leave the cross behind that preview.
+        for overlay in (
+            self._dockManager.containerOverlay(),
+            self._dockManager.dockAreaOverlay(),
+        ):
+            overlay.setWindowFlag(
+                QtCore.Qt.WindowType.WindowStaysOnTopHint,
+                True,
+            )
+        self._dockManager.focusedDockWidgetChanged.connect(
+            self._onFocusedDockWidgetChanged
+        )
+
+        # Create editor stack and host it as a central dock widget
+        self._primaryEditors = EditorTabs(self)
+        pyzo.editors = install_editor_group_manager(
+            [self._primaryEditors], self
+        )
+        self._editorDock = QtAds.CDockWidget(self._dockManager, "Editors")
+        self._editorDock.setObjectName("pyzo-editors")
+        self._editorDock.setWidget(self._primaryEditors)
+        self._dockManager.addDockWidget(QtAds.CenterDockWidgetArea, self._editorDock)
+
+        # Create a second editor group as the first integration slice. The
+        # original group remains the global pyzo.editors service for now; this
+        # deliberately exposes the places that must become group-aware.
+        self._secondaryEditors = EditorTabs(self)
+        pyzo.editors.addGroup(self._secondaryEditors)
+        self._secondaryEditors.setObjectName("pyzo-editors-secondary")
+        self._secondaryEditorDock = QtAds.CDockWidget(
+            self._dockManager, "Editors 2"
+        )
+        self._secondaryEditorDock.setObjectName("pyzo-editors-secondary-dock")
+        self._secondaryEditorDock.setWidget(self._secondaryEditors)
+        self._dockManager.addDockWidget(
+            QtAds.RightDockWidgetArea,
+            self._secondaryEditorDock,
+            self._editorDock.dockAreaWidget(),
+        )
+
+        # Create an ADS dock for the shell. The shell widget itself remains
+        # unchanged; only its layout container moves into the unified manager.
+        self._shellDock = dock = QtAds.CDockWidget(self._dockManager, "Shell")
         DWF = dock.DockWidgetFeature
         if pyzo.config.settings.allowFloatingShell:
             dock.setFeatures(DWF.DockWidgetMovable | DWF.DockWidgetFloatable)
@@ -191,7 +255,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dock.setFeatures(DWF.DockWidgetMovable)
         dock.setObjectName("shells")
         dock.setWindowTitle("Shells")
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self._dockManager.addDockWidget(QtAds.RightDockWidgetArea, dock)
 
         # Create shell stack
         pyzo.shells = ShellStackWidget(self)
@@ -215,7 +279,32 @@ class MainWindow(QtWidgets.QMainWindow):
         menu.buildMenus(self.menuBar())
 
         # Add the context menu to the editor
-        pyzo.editors.addContextMenu()
+        self._primaryEditors.addContextMenu()
+        self._secondaryEditors.addContextMenu()
+        self._primaryEditors.newFile()
+        self._secondaryEditors.newFile()
+        if "--test" in sys.argv:
+            moved_editor = pyzo.editors.moveCurrentEditorToGroup(self._primaryEditors)
+            assert moved_editor is not None
+            moved_back_editor = pyzo.editors.moveCurrentEditorToGroup(
+                self._secondaryEditors
+            )
+            assert moved_back_editor is moved_editor
+            print("Pyzo editor-group move smoke test passed")
+            # Exercise the debugger-facing facade: source loading follows the
+            # active area and indicators are broadcast to every area.
+            debug_item = pyzo.editors.loadFile(__file__, ignoreFail=True)
+            assert debug_item is not None
+            assert debug_item.editor in self._secondaryEditors
+            pyzo.editors.setDebugLineIndicators((__file__, 1))
+            assert debug_item.editor._debugLineIndicator == 1
+            print("Pyzo debugger editor-group routing smoke test passed")
+            pyzo.toolManager.loadTool("pyzofilebrowser")
+            file_browser_dock = pyzo.toolManager._activeTools.get("pyzofilebrowser")
+            assert file_browser_dock is not None
+            assert isinstance(file_browser_dock, QtAds.CDockWidget)
+            pyzo.toolManager.closeTool("pyzofilebrowser")
+            print("Pyzo ADS tool-container smoke test passed")
         pyzo.shells.addContextMenu()
 
         # Load tools
@@ -224,6 +313,12 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.toolManager.loadTool("pyzofilebrowser", "pyzosourcestructure")
         elif pyzo.config.state.loadedTools:
             self.restoreTools()
+
+    def _onFocusedDockWidgetChanged(self, dock_widget):
+        if dock_widget is self._editorDock:
+            pyzo.editors.setActiveGroup(self._primaryEditors)
+        elif dock_widget is self._secondaryEditorDock:
+            pyzo.editors.setActiveGroup(self._secondaryEditors)
 
     def setMainTitle(self, path=None):
         """Set the title of the main window, by giving a file path."""

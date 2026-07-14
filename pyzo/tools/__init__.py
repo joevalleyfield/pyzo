@@ -35,15 +35,24 @@ from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
 from pyzo.util import zon as ssdf
 from pyzo import translate  # noqa (we have an eval down here)
 
+try:
+    import PySide6QtAds as QtAds
+except ImportError:
+    QtAds = None
 
-class ToolDockWidget(QtWidgets.QDockWidget):
+
+class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
     """A dock widget that holds a tool.
     It sets all settings, initializes the tool widget, and notifies the
     tool manager on closing.
     """
 
     def __init__(self, parent, toolManager):
-        super().__init__(parent)
+        self._usingAds = QtAds is not None and hasattr(parent, "_dockManager")
+        if self._usingAds:
+            super().__init__(parent._dockManager, "")
+        else:
+            super().__init__(parent)
 
         # Store stuff
         self._toolManager = toolManager
@@ -51,10 +60,12 @@ class ToolDockWidget(QtWidgets.QDockWidget):
         # Allow docking anywhere, othwerise restoring state won't work properly
 
         # Set other settings
-        DWF = QtWidgets.QDockWidget.DockWidgetFeature
+        if self._usingAds:
+            DWF = QtAds.CDockWidget.DockWidgetFeature
+        else:
+            DWF = QtWidgets.QDockWidget.DockWidgetFeature
         self.setFeatures(
             DWF.DockWidgetMovable | DWF.DockWidgetClosable | DWF.DockWidgetFloatable
-            # DWF.DockWidgetVerticalTitleBar
         )
 
     def setTool(self, toolId, toolName, toolClass):
@@ -343,9 +354,25 @@ class ToolManager(QtCore.QObject):
 
         if splitWith and splitWith in self._activeTools:
             otherDock = self._activeTools[splitWith]
-            pyzo.main.splitDockWidget(otherDock, dock, QtCore.Qt.Orientation.Horizontal)
+            if getattr(dock, "_usingAds", False):
+                pyzo.main._dockManager.addDockWidget(
+                    QtAds.RightDockWidgetArea,
+                    dock,
+                    otherDock.dockAreaWidget(),
+                )
+            else:
+                pyzo.main.splitDockWidget(
+                    otherDock, dock, QtCore.Qt.Orientation.Horizontal
+                )
         else:
-            pyzo.main.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            if getattr(dock, "_usingAds", False):
+                pyzo.main._dockManager.addDockWidget(
+                    QtAds.RightDockWidgetArea, dock
+                )
+            else:
+                pyzo.main.addDockWidget(
+                    QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock
+                )
 
         # Add to list
         self._activeTools[toolId] = dock

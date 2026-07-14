@@ -1039,6 +1039,14 @@ class ViewMenu(Menu):
             icons.application_edit,
             self._selectEditor,
         )
+        self.addItem(
+            translate(
+                "menu",
+                "Move editor to next area ::: Move the current document to the next editor area.",
+            ),
+            icons.application_edit,
+            pyzo.editors.moveCurrentEditorToNextGroup,
+        )
         self.addSeparator()
         pyzo.core.views.ViewManagerDialog.registerMenuAction(
             self.addItem(

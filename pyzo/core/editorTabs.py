@@ -1241,6 +1241,31 @@ class EditorTabs(QtWidgets.QWidget):
 
         return item
 
+    def detachCurrentItem(self):
+        """Detach the current file item without destroying its editor."""
+
+        item = self._tabs.currentItem()
+        if item is None:
+            return None
+        index = self._tabs.indexOf(item.editor)
+        if index < 0:
+            return None
+
+        # Call QTabWidget.removeTab directly. FileTabWidget.removeTab is the
+        # close path and intentionally destroys the editor, which is wrong for
+        # moving a document between editor groups.
+        QtWidgets.QTabWidget.removeTab(self._tabs, index)
+        self._tabs.fileTabsChanged.emit()
+        self._tabs.updateItems()
+        return item
+
+    def attachItem(self, item):
+        """Attach an existing file item to this editor group."""
+
+        self._tabs.addItem(item)
+        self._tabs.setCurrentItem(item)
+        return item
+
     def openFile(self):
         """Create a dialog for the user to select a file."""
 
