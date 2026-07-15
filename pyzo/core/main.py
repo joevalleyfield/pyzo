@@ -17,7 +17,7 @@ from queue import Queue, Empty
 import pyzo
 from pyzo.core.icons import IconArtist
 from pyzo.core import commandline
-from pyzo.core.statusbar import StatusBar
+from pyzo.core.statusbar import PeerStatusService, StatusBar
 from pyzo.qt import QtCore, QtGui, QtWidgets
 from pyzo.core.splash import SplashWidget
 from pyzo.util import paths
@@ -448,6 +448,19 @@ class _AdsDropGuideController(QtCore.QObject):
         return False
 
 
+class _PeerPaneFocusFilter(QtCore.QObject):
+    """Route content focus to application pane identity in peer mode."""
+
+    def __init__(self, main_window):
+        super().__init__(main_window)
+        self._mainWindow = main_window
+
+    def eventFilter(self, watched, event):
+        if event.type() == QtCore.QEvent.Type.FocusIn:
+            self._mainWindow._activatePeerPaneForWidget(watched)
+        return False
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
@@ -629,6 +642,7 @@ class MainWindow(QtWidgets.QMainWindow):
             from spikes.peer_frames.commands import (
                 CommandDescriptor,
                 CommandRegistry,
+                VIEW_STATUS_COMMAND,
             )
             from spikes.peer_frames.contract import (
                 Direction,
@@ -638,6 +652,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             from spikes.peer_frames.qtads_backend import QtAdsPeerFrameBackend
             from spikes.peer_frames.qtads_commands import QtAdsCommandProjector
+            from spikes.peer_frames.qtads_status import QtAdsStatusProjector
+            from spikes.peer_frames.status import StatusState
 
             self._PeerDirection = Direction
             self._PeerPaneDescriptor = PaneDescriptor
@@ -646,6 +662,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerWorkspace = WorkspaceModel(self._peerBackend)
             self._peerBackend.bind_model(self._peerWorkspace)
             self._dockManager = self._peerBackend.manager
+            self._peerStatusState = StatusState()
+            self._peerStatusProjector = QtAdsStatusProjector(
+                self._peerStatusState, self._dockManager
+            )
             pyzo.commands = CommandRegistry(
                 self._peerWorkspace.resolve_active_context
             )
@@ -657,10 +677,21 @@ class MainWindow(QtWidgets.QMainWindow):
                     shortcuts=("Ctrl+Q",),
                 )
             )
+            pyzo.commands.register(
+                CommandDescriptor(
+                    VIEW_STATUS_COMMAND,
+                    translate("menu", "Show status bar"),
+                    self._togglePeerStatusBar,
+                    checked_when=lambda _context: (
+                        self._peerStatusState.snapshot.visible
+                    ),
+                    checkable=True,
+                )
+            )
             self._peerCommandProjector = QtAdsCommandProjector(
                 pyzo.commands,
                 self._dockManager,
-                ("application.quit",),
+                (VIEW_STATUS_COMMAND, "application.quit"),
             )
         else:
             # The previous main-window integration remains as a control. Its
@@ -705,6 +736,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._editorHostSerial = 0
         self._shellHostSerial = 0
         self._menusReady = False
+        if self._peerFrameMode:
+            self._peerPaneFocusFilter = _PeerPaneFocusFilter(self)
+            QtWidgets.QApplication.instance().installEventFilter(
+                self._peerPaneFocusFilter
+            )
 
         # There is one legacy host per document/interpreter. Its internal
         # selector is hidden; QtADS is the sole visible grouping layer.
@@ -723,9 +759,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # Create the default shell when returning to the event queue
         callLater(pyzo.shells.addShell)
 
-        # Create status bar
-        self.setStatusBar(StatusBar())
-        # show or hide
+        # Create the legacy status widget or the application-owned peer service.
+        # Kernel/execution affinity is intentionally not part of this globally
+        # projected state; focus must not silently select a run target.
+        if self._peerFrameMode:
+            self._peerStatusService = PeerStatusService(
+                self._peerStatusState, self
+            )
+        else:
+            self.setStatusBar(StatusBar())
         self.statusBar().setVisible(pyzo.config.view.showStatusbar)
 
         # Create menu
@@ -757,6 +799,14 @@ class MainWindow(QtWidgets.QMainWindow):
             assert all(group._tabs.count() == 1 for group in pyzo.editors.groups)
             pyzo.editors.setDebugLineIndicators((__file__, 1))
             assert debug_item.editor._debugLineIndicator == 1
+            if self._peerFrameMode:
+                self._activatePeerPaneForWidget(first_item.editor)
+                first_group = pyzo.editors._group_for_editor(first_item.editor)
+                assert pyzo.editors.activeGroup is first_group
+                assert pyzo.editors.getCurrentEditor() is first_item.editor
+                assert self._peerWorkspace.resolve_active_context().pane.kind is (
+                    self._PeerPaneKind.EDITOR
+                )
             pyzo.editors.closeFile(second_item.editor)
             assert len(pyzo.editors.groups) == 2
             assert second_item.editor not in tuple(pyzo.editors)
@@ -765,6 +815,13 @@ class MainWindow(QtWidgets.QMainWindow):
             file_browser_dock = pyzo.toolManager._activeTools.get("pyzofilebrowser")
             assert file_browser_dock is not None
             assert isinstance(file_browser_dock, QtAds.CDockWidget)
+            if self._peerFrameMode:
+                active_editor = pyzo.editors.activeGroup
+                self._peerBackend._focused_dock_widget_changed(file_browser_dock)
+                self._onFocusedDockWidgetChanged(file_browser_dock)
+                context = self._peerWorkspace.resolve_active_context()
+                assert context.pane.kind is self._PeerPaneKind.TOOL
+                assert pyzo.editors.activeGroup is active_editor
             pyzo.toolManager.closeTool("pyzofilebrowser")
             print("Pyzo ADS tool-container smoke test passed")
             if self._peerFrameMode:
@@ -834,6 +891,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.restoreTools()
 
     def _onFocusedDockWidgetChanged(self, dock_widget):
+        # Focus selects command/service context. It does not bind an editor to
+        # an interpreter; execution affinity needs its own explicit resolver.
         for host, dock in self._editorHosts.items():
             if dock_widget is dock:
                 pyzo.editors.setActiveGroup(host)
@@ -842,6 +901,33 @@ class MainWindow(QtWidgets.QMainWindow):
             if dock_widget is dock:
                 pyzo.shells.setActiveHost(host)
                 return
+
+    def _activatePeerPaneForWidget(self, widget):
+        if not self._peerFrameMode or not isinstance(widget, QtWidgets.QWidget):
+            return
+        for pane_id, dock in self._peerBackend.docks.items():
+            content = dock.widget()
+            if content is None:
+                continue
+            if widget is not content and not content.isAncestorOf(widget):
+                continue
+            self._peerBackend._focused_dock_widget_changed(dock)
+            self._onFocusedDockWidgetChanged(dock)
+            if pane_id.startswith("editor-") and hasattr(
+                self, "_peerStatusService"
+            ):
+                self.statusBar().updateCursorInfo(pyzo.editors.getCurrentEditor())
+            return
+
+    def _togglePeerStatusBar(self, _context):
+        visible = not self.statusBar().isVisible()
+        pyzo.config.view.showStatusbar = visible
+        self.statusBar().setVisible(visible)
+
+    def statusBar(self):
+        if self._peerFrameMode and hasattr(self, "_peerStatusService"):
+            return self._peerStatusService
+        return super().statusBar()
 
     def _testAdsWindowOrderModel(self):
         """Assert every ordering state introduced by the macOS fix."""
@@ -1028,6 +1114,37 @@ class MainWindow(QtWidgets.QMainWindow):
         assert len(pyzo.shells.hosts) == 2
         assert all(len(host.getShells()) == 1 for host in pyzo.shells.hosts)
         assert pyzo.shells.getCurrentShell() is second_shell
+        if self._peerFrameMode:
+            editor_group = pyzo.editors.activeGroup
+            editor_dock = self._editorHosts[editor_group]
+            second_host = next(
+                host for host in pyzo.shells.hosts if second_shell in host.getShells()
+            )
+            first_host = next(
+                host for host in pyzo.shells.hosts if first_shell in host.getShells()
+            )
+
+            self._peerBackend._focused_dock_widget_changed(editor_dock)
+            self._onFocusedDockWidgetChanged(editor_dock)
+            assert pyzo.editors.activeGroup is editor_group
+            assert pyzo.shells.getCurrentShell() is second_shell
+            assert self._peerWorkspace.resolve_active_context().pane.kind is (
+                self._PeerPaneKind.EDITOR
+            )
+
+            first_shell_dock = self._shellHosts[first_host]
+            self._peerBackend._focused_dock_widget_changed(first_shell_dock)
+            self._onFocusedDockWidgetChanged(first_shell_dock)
+            assert pyzo.shells.getCurrentShell() is first_shell
+            assert pyzo.editors.activeGroup is editor_group
+            assert self._peerWorkspace.resolve_active_context().pane.kind is (
+                self._PeerPaneKind.SHELL
+            )
+
+            second_shell_dock = self._shellHosts[second_host]
+            self._peerBackend._focused_dock_widget_changed(second_shell_dock)
+            self._onFocusedDockWidgetChanged(second_shell_dock)
+            assert pyzo.shells.getCurrentShell() is second_shell
         second_shell.closeShell()
         assert len(pyzo.shells.hosts) == 1
         assert pyzo.shells.getCurrentShell() is first_shell
@@ -1107,6 +1224,24 @@ class MainWindow(QtWidgets.QMainWindow):
         assert pyzo.commands.descriptors[0].id == "application.quit"
         assert self._peerCommandProjector.native_menus == (sys.platform == "darwin")
         peer_windows = tuple(self._peerBackend.frame_windows.values())
+        status_was_visible = self.statusBar().isVisible()
+        self.statusBar().setVisible(True)
+        self.statusBar().showMessage("Peer status smoke")
+        self.statusBar().updateCursorInfo(pyzo.editors.getCurrentEditor())
+        assert self.statusBar().currentMessage() == "Peer status smoke"
+        assert not self.findChildren(QtWidgets.QStatusBar)
+        peer_status_bars = tuple(
+            self._peerStatusProjector.status_bar_for(window)
+            for window in peer_windows
+        )
+        assert all(bar.isVisible() for bar in peer_status_bars)
+        assert all(
+            bar.message_label.text() == "Peer status smoke"
+            for bar in peer_status_bars
+        )
+        assert len({bar.cursor_label.text() for bar in peer_status_bars}) == 1
+        self.statusBar().clearMessage()
+        self.statusBar().setVisible(status_was_visible)
         peer_quit_actions = tuple(
             self._peerCommandProjector.action_for(window, "application.quit")
             for window in peer_windows
