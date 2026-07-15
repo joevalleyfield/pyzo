@@ -285,6 +285,8 @@ def start():
 
     # Instantiate the application
     QtWidgets.qApp = MyApp(sys.argv)  # QtWidgets.QApplication([])
+    QtWidgets.qApp.setApplicationName("Pyzo")
+    QtWidgets.qApp.setApplicationDisplayName("Pyzo")
 
     fixVisualQuirks()
 
@@ -342,6 +344,7 @@ pyzo.main = None  # The mainwindow
 pyzo.icon = None  # The icon
 pyzo.parser = None  # The source parser
 pyzo.status = None  # The statusbar (or None)
+pyzo.commands = None  # Application-owned commands (peer-frame mode for now)
 
 # Get directories of interest
 pyzo.appDataDir, pyzo.appConfigDir = paths.prepare_appdata_appconfig_dirs()

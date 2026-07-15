@@ -626,6 +626,10 @@ class MainWindow(QtWidgets.QMainWindow):
         QtAds.CDockManager.setConfigFlag(config_flag.EqualSplitOnInsertion, True)
 
         if self._peerFrameMode:
+            from spikes.peer_frames.commands import (
+                CommandDescriptor,
+                CommandRegistry,
+            )
             from spikes.peer_frames.contract import (
                 Direction,
                 PaneDescriptor,
@@ -633,6 +637,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 WorkspaceModel,
             )
             from spikes.peer_frames.qtads_backend import QtAdsPeerFrameBackend
+            from spikes.peer_frames.qtads_commands import QtAdsCommandProjector
 
             self._PeerDirection = Direction
             self._PeerPaneDescriptor = PaneDescriptor
@@ -641,6 +646,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerWorkspace = WorkspaceModel(self._peerBackend)
             self._peerBackend.bind_model(self._peerWorkspace)
             self._dockManager = self._peerBackend.manager
+            pyzo.commands = CommandRegistry(
+                self._peerWorkspace.resolve_active_context
+            )
+            pyzo.commands.register(
+                CommandDescriptor(
+                    "application.quit",
+                    translate("menu", "Quit Pyzo"),
+                    lambda _context: pyzo.main.close(),
+                    shortcuts=("Ctrl+Q",),
+                )
+            )
+            self._peerCommandProjector = QtAdsCommandProjector(
+                pyzo.commands,
+                self._dockManager,
+                ("application.quit",),
+            )
         else:
             # The previous main-window integration remains as a control. Its
             # custom ordering and guide code is deliberately absent from the
@@ -1071,6 +1092,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._removePeerDock(dock)
 
     def _testPeerFrameNativeOverlays(self):
+        assert QtWidgets.qApp.applicationName() == "Pyzo"
+        assert QtWidgets.qApp.applicationDisplayName() == "Pyzo"
         assert self._dockManager.parent() is None
         assert self._dockManager.dockAreaCount() == 0
         assert not hasattr(self, "_adsDropGuideController")
@@ -1081,6 +1104,27 @@ class MainWindow(QtWidgets.QMainWindow):
             type(window).__name__ == "CFloatingDockContainer"
             for window in self._peerBackend.frame_windows.values()
         )
+        assert pyzo.commands.descriptors[0].id == "application.quit"
+        assert self._peerCommandProjector.native_menus == (sys.platform == "darwin")
+        assert all(
+            self._peerCommandProjector.action_for(
+                window, "application.quit"
+            ).property("applicationCommandId")
+            == "application.quit"
+            for window in self._peerBackend.frame_windows.values()
+        )
+        quit_action = self._peerCommandProjector.action_for(
+            next(iter(self._peerBackend.frame_windows.values())),
+            "application.quit",
+        )
+        original_close = pyzo.main.close
+        quit_calls = []
+        try:
+            pyzo.main.close = lambda: quit_calls.append(True) or False
+            quit_action.trigger()
+        finally:
+            pyzo.main.close = original_close
+        assert quit_calls == [True]
 
         container_overlay = self._dockManager.containerOverlay()
         dock_area_overlay = self._dockManager.dockAreaOverlay()
