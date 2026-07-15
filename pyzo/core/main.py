@@ -1106,17 +1106,28 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         assert pyzo.commands.descriptors[0].id == "application.quit"
         assert self._peerCommandProjector.native_menus == (sys.platform == "darwin")
+        peer_windows = tuple(self._peerBackend.frame_windows.values())
+        peer_quit_actions = tuple(
+            self._peerCommandProjector.action_for(window, "application.quit")
+            for window in peer_windows
+        )
+        if sys.platform == "darwin":
+            application_menu = self._peerCommandProjector.application_menu_bar
+            assert application_menu is not None
+            assert application_menu.parent() is None
+            assert len({id(action) for action in peer_quit_actions}) == 1
+        else:
+            assert self._peerCommandProjector.application_menu_bar is None
+            assert all(
+                self._peerCommandProjector.menu_bar_for(window).parent() is window
+                for window in peer_windows
+            )
+            assert len({id(action) for action in peer_quit_actions}) == len(peer_windows)
         assert all(
-            self._peerCommandProjector.action_for(
-                window, "application.quit"
-            ).property("applicationCommandId")
-            == "application.quit"
-            for window in self._peerBackend.frame_windows.values()
+            action.property("applicationCommandId") == "application.quit"
+            for action in peer_quit_actions
         )
-        quit_action = self._peerCommandProjector.action_for(
-            next(iter(self._peerBackend.frame_windows.values())),
-            "application.quit",
-        )
+        quit_action = peer_quit_actions[0]
         original_close = pyzo.main.close
         quit_calls = []
         try:
