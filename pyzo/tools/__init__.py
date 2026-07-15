@@ -67,6 +67,11 @@ class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
         self.setFeatures(
             DWF.DockWidgetMovable | DWF.DockWidgetClosable | DWF.DockWidgetFloatable
         )
+        if self._usingAds and getattr(parent, "_peerFrameMode", False):
+            # Pane close negotiation is introduced in the lifecycle
+            # experiment. Until then, do not let a widget close bypass the
+            # application-owned peer workspace.
+            self.setFeatures(DWF.DockWidgetMovable | DWF.DockWidgetFloatable)
 
     def setTool(self, toolId, toolName, toolClass):
         """Set the tool information. Call this right after
@@ -355,10 +360,8 @@ class ToolManager(QtCore.QObject):
         if splitWith and splitWith in self._activeTools:
             otherDock = self._activeTools[splitWith]
             if getattr(dock, "_usingAds", False):
-                pyzo.main._dockManager.addDockWidget(
-                    QtAds.RightDockWidgetArea,
-                    dock,
-                    otherDock.dockAreaWidget(),
+                pyzo.main.addAdsDockWidget(
+                    QtAds.RightDockWidgetArea, dock, otherDock
                 )
             else:
                 pyzo.main.splitDockWidget(
@@ -366,9 +369,7 @@ class ToolManager(QtCore.QObject):
                 )
         else:
             if getattr(dock, "_usingAds", False):
-                pyzo.main._dockManager.addDockWidget(
-                    QtAds.RightDockWidgetArea, dock
-                )
+                pyzo.main.addAdsDockWidget(QtAds.RightDockWidgetArea, dock)
             else:
                 pyzo.main.addDockWidget(
                     QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock
@@ -388,7 +389,10 @@ class ToolManager(QtCore.QObject):
         """Close the tool with specified id."""
         if toolId in self._activeTools:
             dock = self._activeTools[toolId]
-            dock.close()
+            if getattr(pyzo.main, "_peerFrameMode", False):
+                pyzo.main.removePeerToolDock(dock)
+            else:
+                dock.close()
 
     def getTool(self, toolId):
         """Get the tool widget instance, or None

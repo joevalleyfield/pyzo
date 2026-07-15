@@ -452,6 +452,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
 
+        self._peerFrameMode = os.environ.get("PYZO_PEER_FRAMES") == "1"
+
         self._closeflag = 0  # Used during closing/restarting
 
         # Init window title and application icon
@@ -570,6 +572,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Handle any actions
         commandline.handle_cmd_args()
 
+        if self._peerFrameMode:
+            # The QMainWindow remains an application-service host for this
+            # experiment. Every user-visible workspace frame is owned by the
+            # peer-frame backend.
+            self.hide()
+
     # To force drawing ourselves
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -617,32 +625,48 @@ class MainWindow(QtWidgets.QMainWindow):
         config_flag = QtAds.CDockManager.eConfigFlag
         QtAds.CDockManager.setConfigFlag(config_flag.EqualSplitOnInsertion, True)
 
-        # Create the docking manager. QtADS normally hard-codes the main
-        # container's z-order to zero, allowing a background floating window
-        # to steal an overlapping drop. Preserve QtADS's floating order while
-        # elevating the main container only when it was the foremost eligible
-        # dock window at drag start.
-        self._adsWindowOrder = _AdsWindowOrderTracker(self)
+        if self._peerFrameMode:
+            from spikes.peer_frames.contract import (
+                Direction,
+                PaneDescriptor,
+                PaneKind,
+                WorkspaceModel,
+            )
+            from spikes.peer_frames.qtads_backend import QtAdsPeerFrameBackend
 
-        class _PyzoDockManager(QtAds.CDockManager):
-            def zOrderIndex(manager_self):
-                if self._adsWindowOrder.mainWindowLeads():
-                    return 0xFFFFFFFF
-                return super().zOrderIndex()
+            self._PeerDirection = Direction
+            self._PeerPaneDescriptor = PaneDescriptor
+            self._PeerPaneKind = PaneKind
+            self._peerBackend = QtAdsPeerFrameBackend()
+            self._peerWorkspace = WorkspaceModel(self._peerBackend)
+            self._peerBackend.bind_model(self._peerWorkspace)
+            self._dockManager = self._peerBackend.manager
+        else:
+            # The previous main-window integration remains as a control. Its
+            # custom ordering and guide code is deliberately absent from the
+            # peer-frame path, where stock QtADS owns native overlay rendering.
+            self._adsWindowOrder = _AdsWindowOrderTracker(self)
 
-        self._dockManager = _PyzoDockManager(self)
-        self._adsWindowOrder.setDockManager(self._dockManager)
-        overlays = (
-            self._dockManager.containerOverlay(),
-            self._dockManager.dockAreaOverlay(),
-        )
-        self._adsDropGuideController = _AdsDropGuideController(overlays, self)
-        for overlay in overlays:
-            overlay.installEventFilter(self._adsDropGuideController)
+            class _PyzoDockManager(QtAds.CDockManager):
+                def zOrderIndex(manager_self):
+                    if self._adsWindowOrder.mainWindowLeads():
+                        return 0xFFFFFFFF
+                    return super().zOrderIndex()
+
+            self._dockManager = _PyzoDockManager(self)
+            self._adsWindowOrder.setDockManager(self._dockManager)
+            overlays = (
+                self._dockManager.containerOverlay(),
+                self._dockManager.dockAreaOverlay(),
+            )
+            self._adsDropGuideController = _AdsDropGuideController(overlays, self)
+            for overlay in overlays:
+                overlay.installEventFilter(self._adsDropGuideController)
         trace_path = os.environ.get("PYZO_ADS_TRACE")
         if trace_path:
             self._adsTrace = _AdsTraceFilter(trace_path, self)
-            self._adsWindowOrder.setTracePath(trace_path)
+            if not self._peerFrameMode:
+                self._adsWindowOrder.setTracePath(trace_path)
             self._traceAdsWidget(self._dockManager)
             self._traceAdsWidget(self._dockManager.containerOverlay())
             self._traceAdsWidget(self._dockManager.dockAreaOverlay())
@@ -695,7 +719,8 @@ class MainWindow(QtWidgets.QMainWindow):
             editor_host.addContextMenu()
         pyzo.shells.addContextMenu()
         if "--test" in sys.argv:
-            self._testAdsWindowOrderModel()
+            if not self._peerFrameMode:
+                self._testAdsWindowOrderModel()
             first_item = pyzo.editors.newFile()
             second_item = pyzo.editors.newFile()
             assert first_item.editor is not second_item.editor
@@ -721,61 +746,64 @@ class MainWindow(QtWidgets.QMainWindow):
             assert isinstance(file_browser_dock, QtAds.CDockWidget)
             pyzo.toolManager.closeTool("pyzofilebrowser")
             print("Pyzo ADS tool-container smoke test passed")
-            container_overlay = self._dockManager.containerOverlay()
-            dock_area_overlay = self._dockManager.dockAreaOverlay()
-            editor_area = self._editorDock.dockAreaWidget()
-            container_overlay.setAllowedAreas(
-                QtAds.TopDockWidgetArea
-                | QtAds.RightDockWidgetArea
-                | QtAds.BottomDockWidgetArea
-                | QtAds.LeftDockWidgetArea
-            )
-            dock_area_overlay.setAllowedAreas(
-                QtAds.TopDockWidgetArea
-                | QtAds.RightDockWidgetArea
-                | QtAds.BottomDockWidgetArea
-                | QtAds.LeftDockWidgetArea
-                | QtAds.CenterDockWidgetArea
-            )
-            container_overlay.showOverlay(
-                self._dockManager,
-                self._dockManager.mapToGlobal(self._dockManager.rect().center()),
-            )
-            dock_area_overlay.showOverlay(
-                editor_area,
-                editor_area.mapToGlobal(editor_area.rect().center()),
-            )
-            expected_guide_geometry = container_overlay.geometry().united(
-                dock_area_overlay.geometry()
-            )
-            assert (
-                self._adsDropGuideController._guide.geometry()
-                == expected_guide_geometry
-            )
-            QtWidgets.QApplication.processEvents()
-            guide_image = self._adsDropGuideController._guide.grab().toImage()
-            dock_area_center = (
-                dock_area_overlay.geometry().center()
-                - self._adsDropGuideController._guide.geometry().topLeft()
-            )
-            assert guide_image.pixelColor(dock_area_center).alpha() > 0
-            assert container_overlay in (
-                self._adsDropGuideController._guide._visibleOverlays
-            )
-            has_outer_accent = any(
-                color.alpha() > 0
-                and color.red() > 220
-                and 120 < color.green() < 220
-                and color.blue() < 120
-                for y in range(guide_image.height())
-                for x in range(guide_image.width())
-                for color in (guide_image.pixelColor(x, y),)
-            )
-            assert has_outer_accent
-            container_overlay.hideOverlay()
-            dock_area_overlay.hideOverlay()
-            self._adsDropGuideController._guide.hideGuide()
-            print("Pyzo ADS dual-layer drop-guide paint smoke test passed")
+            if self._peerFrameMode:
+                self._testPeerFrameNativeOverlays()
+            else:
+                container_overlay = self._dockManager.containerOverlay()
+                dock_area_overlay = self._dockManager.dockAreaOverlay()
+                editor_area = self._editorDock.dockAreaWidget()
+                container_overlay.setAllowedAreas(
+                    QtAds.TopDockWidgetArea
+                    | QtAds.RightDockWidgetArea
+                    | QtAds.BottomDockWidgetArea
+                    | QtAds.LeftDockWidgetArea
+                )
+                dock_area_overlay.setAllowedAreas(
+                    QtAds.TopDockWidgetArea
+                    | QtAds.RightDockWidgetArea
+                    | QtAds.BottomDockWidgetArea
+                    | QtAds.LeftDockWidgetArea
+                    | QtAds.CenterDockWidgetArea
+                )
+                container_overlay.showOverlay(
+                    self._dockManager,
+                    self._dockManager.mapToGlobal(self._dockManager.rect().center()),
+                )
+                dock_area_overlay.showOverlay(
+                    editor_area,
+                    editor_area.mapToGlobal(editor_area.rect().center()),
+                )
+                expected_guide_geometry = container_overlay.geometry().united(
+                    dock_area_overlay.geometry()
+                )
+                assert (
+                    self._adsDropGuideController._guide.geometry()
+                    == expected_guide_geometry
+                )
+                QtWidgets.QApplication.processEvents()
+                guide_image = self._adsDropGuideController._guide.grab().toImage()
+                dock_area_center = (
+                    dock_area_overlay.geometry().center()
+                    - self._adsDropGuideController._guide.geometry().topLeft()
+                )
+                assert guide_image.pixelColor(dock_area_center).alpha() > 0
+                assert container_overlay in (
+                    self._adsDropGuideController._guide._visibleOverlays
+                )
+                has_outer_accent = any(
+                    color.alpha() > 0
+                    and color.red() > 220
+                    and 120 < color.green() < 220
+                    and color.blue() < 120
+                    for y in range(guide_image.height())
+                    for x in range(guide_image.width())
+                    for color in (guide_image.pixelColor(x, y),)
+                )
+                assert has_outer_accent
+                container_overlay.hideOverlay()
+                dock_area_overlay.hideOverlay()
+                self._adsDropGuideController._guide.hideGuide()
+                print("Pyzo ADS dual-layer drop-guide paint smoke test passed")
             callLater(self._testIndependentShellDocks)
         # Load tools
         if pyzo.config.state.newUser and not pyzo.config.state.loadedTools:
@@ -889,17 +917,25 @@ class MainWindow(QtWidgets.QMainWindow):
         dock = self._QtAds.CDockWidget(self._dockManager, "Untitled")
         dock.setObjectName(f"pyzo-editor-dock-{self._editorHostSerial}")
         dock.setWidget(host)
-        active = getattr(pyzo, "editors", None)
-        active_group = getattr(active, "activeGroup", None)
-        active_dock = self._editorHosts.get(active_group)
-        if active_dock is None:
-            self._dockManager.addDockWidget(self._QtAds.CenterDockWidgetArea, dock)
-        else:
-            self._dockManager.addDockWidget(
-                self._QtAds.CenterDockWidgetArea,
+        if self._peerFrameMode:
+            self._registerPeerDock(
+                f"editor-{self._editorHostSerial}",
+                self._PeerPaneKind.EDITOR,
+                "Untitled",
                 dock,
-                active_dock.dockAreaWidget(),
             )
+        else:
+            active = getattr(pyzo, "editors", None)
+            active_group = getattr(active, "activeGroup", None)
+            active_dock = self._editorHosts.get(active_group)
+            if active_dock is None:
+                self._dockManager.addDockWidget(self._QtAds.CenterDockWidgetArea, dock)
+            else:
+                self._dockManager.addDockWidget(
+                    self._QtAds.CenterDockWidgetArea,
+                    dock,
+                    active_dock.dockAreaWidget(),
+                )
         self._editorHosts[host] = dock
         host._tabs.fileTabsChanged.connect(
             lambda host=host: self._updateEditorDockTitle(host)
@@ -921,8 +957,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _removeEditorHost(self, host):
         dock = self._editorHosts.pop(host, None)
         if dock is not None:
-            self._dockManager.removeDockWidget(dock)
-            dock.deleteLater()
+            if self._peerFrameMode:
+                self._removePeerDock(dock)
+            else:
+                self._dockManager.removeDockWidget(dock)
+                dock.deleteLater()
 
     def _createShellHost(self):
         self._shellHostSerial += 1
@@ -931,12 +970,20 @@ class MainWindow(QtWidgets.QMainWindow):
         dock = self._QtAds.CDockWidget(self._dockManager, "Shell")
         dock.setObjectName(f"pyzo-shell-dock-{self._shellHostSerial}")
         features = dock.DockWidgetFeature
-        if pyzo.config.settings.allowFloatingShell:
+        if self._peerFrameMode or pyzo.config.settings.allowFloatingShell:
             dock.setFeatures(features.DockWidgetMovable | features.DockWidgetFloatable)
         else:
             dock.setFeatures(features.DockWidgetMovable)
         dock.setWidget(host)
-        self._dockManager.addDockWidget(self._QtAds.RightDockWidgetArea, dock)
+        if self._peerFrameMode:
+            self._registerPeerDock(
+                f"shell-{self._shellHostSerial}",
+                self._PeerPaneKind.SHELL,
+                "Shell",
+                dock,
+            )
+        else:
+            self._dockManager.addDockWidget(self._QtAds.RightDockWidgetArea, dock)
         self._shellHosts[host] = dock
         host.currentShellStateChanged.connect(
             lambda host=host: self._updateShellDockTitle(host)
@@ -969,8 +1016,90 @@ class MainWindow(QtWidgets.QMainWindow):
         dock = self._shellHosts.pop(host, None)
         if dock is not None:
             host.dispose()
-            self._dockManager.removeDockWidget(dock)
-            dock.deleteLater()
+            if self._peerFrameMode:
+                self._removePeerDock(dock)
+            else:
+                self._dockManager.removeDockWidget(dock)
+                dock.deleteLater()
+
+    def _registerPeerDock(self, pane_id, pane_kind, title, dock):
+        self._peerBackend.register_dock(pane_id, dock)
+        result = self._peerWorkspace.register_pane(
+            self._PeerPaneDescriptor(pane_id, pane_kind, title)
+        )
+        if not result.applied:
+            raise RuntimeError(result.detail)
+        result = self._peerWorkspace.create_frame(
+            pane_id, f"pyzo-frame-{pane_id}"
+        )
+        if not result.applied:
+            raise RuntimeError(result.detail)
+        dock.setWindowTitle(title)
+        self._peerBackend.frame_windows[f"pyzo-frame-{pane_id}"].setWindowTitle(
+            title
+        )
+
+    def _removePeerDock(self, dock):
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
+        result = self._peerWorkspace.request_close_pane(pane_id)
+        if not result.applied:
+            raise RuntimeError(result.detail)
+
+    def addAdsDockWidget(self, area, dock, target_dock=None):
+        if not self._peerFrameMode:
+            return self._dockManager.addDockWidget(
+                area,
+                dock,
+                target_dock.dockAreaWidget() if target_dock is not None else None,
+            )
+
+        pane_id = f"tool-{dock._toolId}"
+        self._registerPeerDock(pane_id, self._PeerPaneKind.TOOL, dock.windowTitle(), dock)
+        if target_dock is not None:
+            target_id = self._peerBackend._pane_id_from_dock(target_dock)
+            result = self._peerWorkspace.split(
+                pane_id, target_id, self._PeerDirection.RIGHT
+            )
+            if not result.applied:
+                raise RuntimeError(result.detail)
+        return dock.dockAreaWidget()
+
+    def removePeerToolDock(self, dock):
+        if dock._toolManager is not None:
+            dock._toolManager.onToolClose(dock._toolId)
+            dock._toolManager = None
+        self._removePeerDock(dock)
+
+    def _testPeerFrameNativeOverlays(self):
+        assert self._dockManager.parent() is None
+        assert self._dockManager.dockAreaCount() == 0
+        assert not hasattr(self, "_adsDropGuideController")
+        assert self._editorDock.isInFloatingContainer()
+        floating = self._editorDock.floatingDockContainer()
+        assert floating is not None
+        assert all(
+            type(window).__name__ == "CFloatingDockContainer"
+            for window in self._peerBackend.frame_windows.values()
+        )
+
+        container_overlay = self._dockManager.containerOverlay()
+        dock_area_overlay = self._dockManager.dockAreaOverlay()
+        container = floating.dockContainer()
+        area = self._editorDock.dockAreaWidget()
+        container_overlay.showOverlay(
+            container, container.mapToGlobal(container.rect().center())
+        )
+        dock_area_overlay.showOverlay(area, area.mapToGlobal(area.rect().center()))
+        QtWidgets.QApplication.processEvents()
+        assert container_overlay.isVisible()
+        assert dock_area_overlay.isVisible()
+        assert not any(
+            type(widget).__name__ == "_AdsDropGuide"
+            for widget in QtWidgets.QApplication.topLevelWidgets()
+        )
+        container_overlay.hideOverlay()
+        dock_area_overlay.hideOverlay()
+        print("Pyzo peer-frame native ADS overlay ownership smoke test passed")
 
     def _traceAdsWidget(self, widget):
         if hasattr(self, "_adsTrace") and widget is not None:
@@ -1201,6 +1330,9 @@ class MainWindow(QtWidgets.QMainWindow):
         #         print('Number of threads alive:', threading.activeCount())
 
         # Proceed as normal
+        if self._peerFrameMode:
+            self._peerBackend.close()
+            QtWidgets.qApp.quit()
         super().closeEvent(event)
 
     def restart(self):
