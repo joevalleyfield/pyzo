@@ -734,7 +734,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._PeerShellState = ShellState
             self._peerBackend = QtAdsPeerFrameBackend()
             self._peerWorkspace = WorkspaceModel(self._peerBackend)
-            self._peerBackend.bind_model(self._peerWorkspace)
+            self._peerBackend.bind_model(
+                self._peerWorkspace, self._requestPeerFrameClose
+            )
             self._peerDocumentViews = DocumentViewRegistry()
             self._peerShellLifecycles = ShellLifecycleRegistry()
             self._peerEditorLifecycleMigration = False
@@ -1332,6 +1334,38 @@ class MainWindow(QtWidgets.QMainWindow):
             votes, self._peerShellCloseChooser
         )
 
+    def _resolvePeerClose(self, votes):
+        document_votes = tuple(
+            vote
+            for vote in votes
+            if self._peerDocumentViews.document_id_for_view(vote.pane_id)
+            is not None
+        )
+        shell_votes = tuple(
+            vote
+            for vote in votes
+            if vote.pane_id in self._peerShellLifecycles.pane_ids
+        )
+        if len(document_votes) + len(shell_votes) != len(votes):
+            return False
+        if shell_votes and not self._peerShellLifecycles.resolve_confirmations(
+            shell_votes, self._peerShellCloseChooser
+        ):
+            return False
+        if document_votes and not self._peerDocumentViews.resolve_confirmations(
+            document_votes, self._peerDirtyCloseChooser
+        ):
+            self._peerShellLifecycles.cancel_pending(
+                tuple(vote.pane_id for vote in shell_votes)
+            )
+            return False
+        return True
+
+    def _requestPeerFrameClose(self, frame_id):
+        return self._peerWorkspace.request_close_frame(
+            frame_id, self._resolvePeerClose
+        )
+
     def _closeCommittedPeerShell(self, pane_id, shell, *, terminate):
         assert pane_id not in self._peerWorkspace.panes
         result = shell.closeShellCommitted(terminate_kernel=terminate)
@@ -1386,6 +1420,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerBackend._focused_dock_widget_changed(second_shell_dock)
             self._onFocusedDockWidgetChanged(second_shell_dock)
             assert pyzo.shells.getCurrentShell() is second_shell
+            second_shell_id = self._peerBackend._pane_id_from_dock(
+                second_shell_dock
+            )
+            second_frame_id = self._peerWorkspace.resolve_active_context().frame_id
+            assert second_frame_id is not None
+            second_window = self._peerBackend.frame_windows[second_frame_id]
+            original_chooser = self._peerShellCloseChooser
+            self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "cancel"
+            assert not second_window.close()
+            QtWidgets.QApplication.processEvents()
+            assert second_shell_id in self._peerWorkspace.panes
+            assert second_window.isVisible()
+            self._peerShellCloseChooser = original_chooser
             self._testPeerPaneMovementMatrix(second_host, second_shell)
             original_chooser = self._peerShellCloseChooser
             self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "cancel"
@@ -1641,16 +1688,35 @@ class MainWindow(QtWidgets.QMainWindow):
                 for group in frame["groups"]
             )
         )
+        shell = pyzo.shells.getCurrentShell()
+        assert shell is not None
+        shell_host = next(
+            host for host in pyzo.shells.hosts if shell in host.getShells()
+        )
+        shell_pane = self._peerBackend._pane_id_from_dock(
+            self._shellHosts[shell_host]
+        )
+        shell_context = shell._context
+        assert self._peerWorkspace.tab(shell_pane, first_pane).applied
         before = self._peerWorkspace.serialize_layout()
         choices = iter(("discard", "cancel"))
         self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: next(choices)
+        original_shell_chooser = self._peerShellCloseChooser
+        self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "terminate"
         result = self._peerWorkspace.request_close_frame(
-            frame_id, self._resolvePeerEditorClose
+            frame_id, self._resolvePeerClose
         )
+        self._peerShellCloseChooser = original_shell_chooser
         assert result.status is self._PeerOperationStatus.CANCELLED
         assert self._peerWorkspace.serialize_layout() == before
         assert first.editor.document().isModified()
         assert second.editor.document().isModified()
+        assert shell in tuple(pyzo.shells)
+        assert shell._context is shell_context
+        assert shell_pane in self._peerShellLifecycles.pane_ids
+        assert self._peerWorkspace.float(
+            shell_pane, "pyzo-dirty-mixed-shell-survivor"
+        ).applied
 
         choices = iter(("discard", "discard"))
         self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: next(choices)
@@ -1734,6 +1800,24 @@ class MainWindow(QtWidgets.QMainWindow):
         assert self._dockManager.dockAreaCount() == 0
         assert not hasattr(self, "_adsDropGuideController")
         assert self._editorDock.isInFloatingContainer()
+        probe_dock = self._QtAds.CDockWidget(
+            self._dockManager, "Native frame close probe"
+        )
+        probe_dock.setWidget(QtWidgets.QLabel("Native frame close probe"))
+        probe_id = "native-frame-close-probe"
+        self._registerPeerDock(
+            probe_id,
+            self._PeerPaneKind.CUSTOM,
+            "Native frame close probe",
+            probe_dock,
+        )
+        probe_frame_id = f"pyzo-frame-{probe_id}"
+        probe_window = self._peerBackend.frame_windows[probe_frame_id]
+        assert not probe_window.close()
+        QtWidgets.QApplication.processEvents()
+        assert probe_id not in self._peerWorkspace.panes
+        assert probe_frame_id not in self._peerWorkspace.frames
+        assert not self._peerWorkspace.shutdown_requested
         floating = self._editorDock.floatingDockContainer()
         assert floating is not None
         assert all(
