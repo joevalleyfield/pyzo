@@ -1407,6 +1407,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         editor_group = pyzo.editors.activeGroup
         editor = editor_group.getCurrentEditor()
+        editor_document = editor.document()
+        editor_dirty = editor_document.isModified()
         editor_dock = self._editorHosts[editor_group]
         shell_dock = self._shellHosts[shell_host]
         shell_context = shell._context
@@ -1423,12 +1425,17 @@ class MainWindow(QtWidgets.QMainWindow):
         assert self._peerWorkspace.panes[editor_id].kind is self._PeerPaneKind.EDITOR
         assert self._peerWorkspace.panes[shell_id].kind is self._PeerPaneKind.SHELL
         assert self._peerWorkspace.panes[tool_id].kind is self._PeerPaneKind.TOOL
+        document_id = self._peerDocumentViews.document_id_for_view(editor_id)
+        assert document_id is not None
+        assert shell_id in self._peerShellLifecycles.pane_ids
 
         def apply(operation):
             result = operation()
             assert result.applied, result.detail
             QtWidgets.QApplication.processEvents()
             assert editor_group.getCurrentEditor() is editor
+            assert editor.document() is editor_document
+            assert editor_document.isModified() is editor_dirty
             assert shell_host.getCurrentShell() is shell
             assert shell._context is shell_context
             assert shell_host._dbs is debugger_widget
@@ -1436,6 +1443,8 @@ class MainWindow(QtWidgets.QMainWindow):
             assert tool_dock.widget() is tool_widget
             assert self._editorHosts[editor_group] is editor_dock
             assert self._shellHosts[shell_host] is shell_dock
+            assert self._peerDocumentViews.document_id_for_view(editor_id) == document_id
+            assert shell_id in self._peerShellLifecycles.pane_ids
             assert self._dockManager.dockAreaCount() == 0
 
         apply(
