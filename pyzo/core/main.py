@@ -12,6 +12,7 @@ import time
 import base64
 import gc
 import tempfile
+import traceback
 import weakref
 from queue import Queue, Empty
 
@@ -524,6 +525,30 @@ class _PyzoShellLifecycle:
         )
 
 
+class _PyzoToolClosePolicy:
+    """Commit tool cleanup only after application topology closes its pane."""
+
+    def __init__(self, main_window, pane_id, dock):
+        self._mainWindow = main_window
+        self._paneId = pane_id
+        self._dock = dock
+
+    def prepare_close(self, pane, request):
+        return self._mainWindow._PeerCloseVote(
+            pane.id, self._mainWindow._PeerCloseDecision.ALLOW
+        )
+
+    def validate_close(self, pane, request):
+        return self._mainWindow._PeerCloseVote(
+            pane.id, self._mainWindow._PeerCloseDecision.ALLOW
+        )
+
+    def did_close(self, pane, request):
+        self._mainWindow._closeCommittedPeerTool(
+            self._paneId, self._dock
+        )
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
@@ -711,6 +736,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 VIEW_STATUS_COMMAND,
             )
             from spikes.peer_frames.contract import (
+                CloseDecision,
+                CloseVote,
                 Direction,
                 OperationStatus,
                 PaneDescriptor,
@@ -725,9 +752,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 ShellLifecycleRegistry,
                 ShellState,
             )
+            from spikes.peer_frames.application_lifecycle import (
+                ApplicationFrameLifecycle,
+            )
             from spikes.peer_frames.status import StatusState
 
             self._PeerDirection = Direction
+            self._PeerCloseDecision = CloseDecision
+            self._PeerCloseVote = CloseVote
             self._PeerOperationStatus = OperationStatus
             self._PeerPaneDescriptor = PaneDescriptor
             self._PeerPaneKind = PaneKind
@@ -742,6 +774,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerEditorLifecycleMigration = False
             self._peerDirtyCloseChooser = self._choosePeerDirtyClose
             self._peerShellCloseChooser = self._choosePeerShellClose
+            self._ApplicationFrameLifecycle = ApplicationFrameLifecycle
+            QtWidgets.qApp.setQuitOnLastWindowClosed(False)
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
             self._peerStatusProjector = QtAdsStatusProjector(
@@ -974,6 +1008,8 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.toolManager.loadTool("pyzofilebrowser", "pyzosourcestructure")
         elif pyzo.config.state.loadedTools:
             self.restoreTools()
+        if self._peerFrameMode:
+            self._installPeerApplicationLifecycle()
 
     def _onFocusedDockWidgetChanged(self, dock_widget):
         # Focus selects command/service context. It does not bind an editor to
@@ -1362,9 +1398,116 @@ class MainWindow(QtWidgets.QMainWindow):
         return True
 
     def _requestPeerFrameClose(self, frame_id):
-        return self._peerWorkspace.request_close_frame(
+        result = self._peerWorkspace.request_close_frame(
             frame_id, self._resolvePeerClose
         )
+        lifecycle = getattr(self, "_peerApplicationLifecycle", None)
+        if result.applied and not self._peerWorkspace.frames and lifecycle is not None:
+            lifecycle.zero_frames_reached()
+        return result
+
+    def _installPeerApplicationLifecycle(self):
+        self._peerDefaultFrameErrors = []
+        self._peerApplicationLifecycle = self._ApplicationFrameLifecycle(
+            has_independent_handle=lambda: sys.platform == "darwin",
+            frame_count=lambda: len(self._peerWorkspace.frames),
+            request_quit=lambda: callLater(self.close),
+            create_configured_frame=self._createConfiguredPeerDefaultFrame,
+            create_factory_frame=self._createFactoryPeerDefaultFrame,
+            log_error=self._logPeerDefaultFrameError,
+            fatal_exit=self._fatalPeerDefaultFrameExit,
+        )
+        if sys.platform == "darwin":
+            QtWidgets.qApp.applicationStateChanged.connect(
+                self._onPeerApplicationStateChanged
+            )
+
+    def _onPeerApplicationStateChanged(self, state):
+        if state == QtCore.Qt.ApplicationState.ApplicationActive:
+            self._peerApplicationLifecycle.application_activated()
+
+    def _createConfiguredPeerDefaultFrame(self):
+        configured_tools = tuple(pyzo.config.state.loadedTools or ())
+        if not configured_tools:
+            configured_tools = ("pyzosourcestructure", "pyzofilebrowser")
+        self._createPeerDefaultFrame(configured_tools)
+
+    def _createFactoryPeerDefaultFrame(self):
+        self._createPeerDefaultFrame(
+            ("pyzosourcestructure", "pyzofilebrowser")
+        )
+
+    def _createPeerDefaultFrame(self, tool_ids):
+        pane_ids = []
+
+        try:
+            item = pyzo.editors.newFile()
+            host = pyzo.editors._group_for_editor(item.editor)
+            pane_ids.append(
+                self._peerBackend._pane_id_from_dock(self._editorHosts[host])
+            )
+        except Exception:
+            self._logPeerDefaultFrameError(
+                "default editor pane failed:\n" + traceback.format_exc()
+            )
+
+        try:
+            shell = pyzo.shells.getCurrentShell()
+            if shell is None:
+                shell = pyzo.shells.addShell()
+            host = next(
+                host for host in pyzo.shells.hosts if shell in host.getShells()
+            )
+            pane_ids.append(
+                self._peerBackend._pane_id_from_dock(self._shellHosts[host])
+            )
+        except Exception:
+            self._logPeerDefaultFrameError(
+                "default shell pane failed:\n" + traceback.format_exc()
+            )
+
+        for tool_id in tool_ids:
+            try:
+                pyzo.toolManager.loadTool(tool_id)
+                dock = pyzo.toolManager._activeTools.get(tool_id)
+                if dock is None:
+                    raise RuntimeError(f"tool did not create a pane: {tool_id}")
+                pane_ids.append(self._peerBackend._pane_id_from_dock(dock))
+            except Exception:
+                self._logPeerDefaultFrameError(
+                    f"default tool pane failed ({tool_id}):\n"
+                    + traceback.format_exc()
+                )
+
+        pane_ids = list(dict.fromkeys(pane_ids))
+        if not pane_ids:
+            return
+        target = pane_ids[0]
+        if len(pane_ids) > 1:
+            result = self._peerWorkspace.split(
+                pane_ids[1], target, self._PeerDirection.BELOW
+            )
+            if not result.applied:
+                raise RuntimeError(result.detail)
+            lower_target = pane_ids[1]
+            for pane_id in pane_ids[2:]:
+                result = self._peerWorkspace.tab(pane_id, lower_target)
+                if not result.applied:
+                    raise RuntimeError(result.detail)
+
+    def _logPeerDefaultFrameError(self, message):
+        self._peerDefaultFrameErrors.append(message)
+        print(message, file=sys.stderr)
+
+    def _fatalPeerDefaultFrameExit(self, code, message):
+        try:
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Pyzo",
+                "Pyzo could not create a window.\n\n" + message,
+            )
+        finally:
+            QtWidgets.qApp.exit(code)
 
     def _closeCommittedPeerShell(self, pane_id, shell, *, terminate):
         assert pane_id not in self._peerWorkspace.panes
@@ -1448,6 +1591,54 @@ class MainWindow(QtWidgets.QMainWindow):
         assert len(pyzo.shells.hosts) == 1
         assert pyzo.shells.getCurrentShell() is first_shell
         print("Pyzo independent shell-dock smoke test passed")
+        if self._peerFrameMode and sys.platform == "darwin":
+            self._testPeerZeroFrameLifecycle()
+
+    def _testPeerZeroFrameLifecycle(self):
+        assert self._peerWorkspace.frames
+        assert not QtWidgets.qApp.quitOnLastWindowClosed()
+        editor = pyzo.editors.getCurrentEditor()
+        assert editor is not None
+        editor_host = pyzo.editors._group_for_editor(editor)
+        target_id = self._peerBackend._pane_id_from_dock(
+            self._editorHosts[editor_host]
+        )
+        for pane_id in tuple(self._peerWorkspace.panes):
+            if pane_id != target_id:
+                result = self._peerWorkspace.tab(pane_id, target_id)
+                assert result.applied, result.detail
+
+        frame_id = self._peerWorkspace.resolve_active_context().frame_id
+        assert frame_id is not None
+        window = self._peerBackend.frame_windows[frame_id]
+        original_dirty_chooser = self._peerDirtyCloseChooser
+        original_shell_chooser = self._peerShellCloseChooser
+        self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "discard"
+        self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "terminate"
+        try:
+            assert not window.close()
+            QtWidgets.QApplication.processEvents()
+        finally:
+            self._peerDirtyCloseChooser = original_dirty_chooser
+            self._peerShellCloseChooser = original_shell_chooser
+
+        assert not self._peerWorkspace.frames
+        assert not self._peerWorkspace.panes
+        assert not self._peerWorkspace.shutdown_requested
+        assert not pyzo.editors.groups
+        assert not pyzo.shells.hosts
+        assert not pyzo.toolManager.getLoadedTools()
+
+        result = self._peerApplicationLifecycle.application_activated()
+        assert result.value == "frame-created"
+        QtWidgets.QApplication.processEvents()
+        assert len(self._peerWorkspace.frames) == 1
+        kinds = {pane.kind for pane in self._peerWorkspace.panes.values()}
+        assert self._PeerPaneKind.EDITOR in kinds
+        assert self._PeerPaneKind.SHELL in kinds
+        assert self._PeerPaneKind.TOOL in kinds
+        assert not self._peerWorkspace.shutdown_requested
+        print("Pyzo zero-frame survival and default recreation smoke test passed")
 
     def _testPeerPaneMovementMatrix(self, shell_host, shell):
         """Move real Pyzo surfaces while preserving application identity."""
@@ -1778,6 +1969,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         pane_id = f"tool-{dock._toolId}"
         self._registerPeerDock(pane_id, self._PeerPaneKind.TOOL, dock.windowTitle(), dock)
+        result = self._peerWorkspace.set_close_policy(
+            pane_id, _PyzoToolClosePolicy(self, pane_id, dock)
+        )
+        if not result.applied:
+            raise RuntimeError(result.detail)
         if target_dock is not None:
             target_id = self._peerBackend._pane_id_from_dock(target_dock)
             result = self._peerWorkspace.split(
@@ -1792,6 +1988,15 @@ class MainWindow(QtWidgets.QMainWindow):
             dock._toolManager.onToolClose(dock._toolId)
             dock._toolManager = None
         self._removePeerDock(dock)
+
+    def _closeCommittedPeerTool(self, pane_id, dock):
+        assert pane_id not in self._peerWorkspace.panes
+        tool = dock.widget()
+        if tool is not None and hasattr(tool, "cleanUp"):
+            tool.cleanUp()
+        if dock._toolManager is not None:
+            dock._toolManager.onToolClose(dock._toolId)
+            dock._toolManager = None
 
     def _testPeerFrameNativeOverlays(self):
         assert QtWidgets.qApp.applicationName() == "Pyzo"
