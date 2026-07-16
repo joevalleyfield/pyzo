@@ -1145,10 +1145,101 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerBackend._focused_dock_widget_changed(second_shell_dock)
             self._onFocusedDockWidgetChanged(second_shell_dock)
             assert pyzo.shells.getCurrentShell() is second_shell
+            self._testPeerPaneMovementMatrix(second_host, second_shell)
         second_shell.closeShell()
         assert len(pyzo.shells.hosts) == 1
         assert pyzo.shells.getCurrentShell() is first_shell
         print("Pyzo independent shell-dock smoke test passed")
+
+    def _testPeerPaneMovementMatrix(self, shell_host, shell):
+        """Move real Pyzo surfaces while preserving application identity."""
+
+        editor_group = pyzo.editors.activeGroup
+        editor = editor_group.getCurrentEditor()
+        editor_dock = self._editorHosts[editor_group]
+        shell_dock = self._shellHosts[shell_host]
+        shell_context = shell._context
+        debugger_widget = shell_host._dbs
+        debugger_actions = tuple(shell_host._debugActions)
+
+        pyzo.toolManager.loadTool("pyzofilebrowser")
+        tool_dock = pyzo.toolManager._activeTools["pyzofilebrowser"]
+        tool_widget = tool_dock.widget()
+
+        editor_id = self._peerBackend._pane_id_from_dock(editor_dock)
+        shell_id = self._peerBackend._pane_id_from_dock(shell_dock)
+        tool_id = self._peerBackend._pane_id_from_dock(tool_dock)
+        assert self._peerWorkspace.panes[editor_id].kind is self._PeerPaneKind.EDITOR
+        assert self._peerWorkspace.panes[shell_id].kind is self._PeerPaneKind.SHELL
+        assert self._peerWorkspace.panes[tool_id].kind is self._PeerPaneKind.TOOL
+
+        def apply(operation):
+            result = operation()
+            assert result.applied, result.detail
+            QtWidgets.QApplication.processEvents()
+            assert editor_group.getCurrentEditor() is editor
+            assert shell_host.getCurrentShell() is shell
+            assert shell._context is shell_context
+            assert shell_host._dbs is debugger_widget
+            assert tuple(shell_host._debugActions) == debugger_actions
+            assert tool_dock.widget() is tool_widget
+            assert self._editorHosts[editor_group] is editor_dock
+            assert self._shellHosts[shell_host] is shell_dock
+            assert self._dockManager.dockAreaCount() == 0
+
+        apply(
+            lambda: self._peerWorkspace.split(
+                tool_id, editor_id, self._PeerDirection.RIGHT
+            )
+        )
+        apply(lambda: self._peerWorkspace.tab(shell_id, editor_id))
+        apply(
+            lambda: self._peerWorkspace.float(
+                editor_id, "pyzo-matrix-editor-frame"
+            )
+        )
+        apply(
+            lambda: self._peerWorkspace.split(
+                shell_id, editor_id, self._PeerDirection.BELOW
+            )
+        )
+        apply(
+            lambda: self._peerWorkspace.float(
+                tool_id, "pyzo-matrix-tool-frame"
+            )
+        )
+        apply(
+            lambda: self._peerWorkspace.split(
+                tool_id,
+                editor_id,
+                self._PeerDirection.LEFT,
+                outer=True,
+            )
+        )
+
+        for pane_id, content in (
+            (editor_id, editor),
+            (shell_id, shell),
+            (tool_id, tool_widget),
+        ):
+            self._activatePeerPaneForWidget(content)
+            assert self._peerWorkspace.resolve_active_context().pane.id == pane_id
+
+        peer_window_ids = {
+            id(window) for window in self._peerBackend.frame_windows.values()
+        }
+        assert peer_window_ids <= self._peerStatusProjector.projected_window_ids
+        assert peer_window_ids <= self._peerCommandProjector.projected_window_ids
+        QtCore.QCoreApplication.sendPostedEvents(
+            None, QtCore.QEvent.Type.DeferredDelete
+        )
+        QtWidgets.QApplication.processEvents()
+        self._peerStatusProjector.refresh()
+        self._peerCommandProjector.refresh()
+        assert self._peerStatusProjector.projected_window_ids == peer_window_ids
+        assert self._peerCommandProjector.projected_window_ids == peer_window_ids
+        pyzo.toolManager.closeTool("pyzofilebrowser")
+        print("Pyzo real-pane movement matrix smoke test passed")
 
     def removeShellHost(self, host):
         dock = self._shellHosts.pop(host, None)
@@ -1521,6 +1612,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Proceed as normal
         if self._peerFrameMode:
+            self._peerStatusProjector.close()
             self._peerBackend.close()
             QtWidgets.qApp.quit()
         super().closeEvent(event)
