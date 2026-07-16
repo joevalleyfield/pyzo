@@ -1765,11 +1765,19 @@ class PythonShell(BaseShell):
         will work :)
         """
 
+        if getattr(pyzo.main, "_peerFrameMode", False):
+            return pyzo.main._requestPeerShellClose(self)
+        return self.closeShellCommitted()
+
+    def closeShellCommitted(self, terminate_kernel=True):
+        """Release a shell after application lifecycle policy commits."""
+
         pyzo.editors.breakPointsChanged.disconnect(self.sendBreakPoints)
 
         # If we can, try to tell the broker to terminate the kernel
         if self._context and self._context.connection_count:
-            self.terminate()
+            if terminate_kernel:
+                self.terminate()
             self._context.flush()  # Important, make sure the message is sent!
             self._context.close()
 
@@ -1781,6 +1789,7 @@ class PythonShell(BaseShell):
         self._timer.stop()
         self._timer.timeout.disconnect()
         self.customContextMenuRequested.disconnect()
+        return 1
 
     def _onConnectionClose(self, c, why):
         """To be called after disconnecting.

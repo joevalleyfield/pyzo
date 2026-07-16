@@ -489,6 +489,41 @@ class _PyzoEditorDocumentLifecycle:
         )
 
 
+class _PyzoShellLifecycle:
+    """Adapt one Pyzo interpreter shell to application lifecycle ownership."""
+
+    def __init__(self, main_window, pane_id, shell):
+        self._mainWindow = main_window
+        self._paneId = pane_id
+        self._shell = shell
+
+    def shell_state(self):
+        states = self._mainWindow._PeerShellState
+        context = self._shell._context
+        if self._shell._state == "Dead":
+            return states.DEAD
+        if context is None or not context.connection_count:
+            return states.DEAD
+        debug_state = self._shell._debugState or {}
+        if self._shell._state == "Debug" or debug_state.get("debugmode", 0) > 0:
+            return states.DEBUGGING
+        if self._shell._state in ("Busy", "Very busy"):
+            return states.RUNNING
+        if self._shell._state in ("Ready", "More"):
+            return states.IDLE
+        return states.STARTING_OR_UNKNOWN
+
+    def choose_live_close(self):
+        return self._mainWindow._askPeerShellClose(self)
+
+    def close_shell(self, disposition):
+        self._mainWindow._closeCommittedPeerShell(
+            self._paneId,
+            self._shell,
+            terminate=disposition.value == "terminated",
+        )
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
@@ -685,19 +720,26 @@ class MainWindow(QtWidgets.QMainWindow):
             from spikes.peer_frames.qtads_backend import QtAdsPeerFrameBackend
             from spikes.peer_frames.qtads_commands import QtAdsCommandProjector
             from spikes.peer_frames.qtads_status import QtAdsStatusProjector
-            from spikes.peer_frames.lifecycle import DocumentViewRegistry
+            from spikes.peer_frames.lifecycle import (
+                DocumentViewRegistry,
+                ShellLifecycleRegistry,
+                ShellState,
+            )
             from spikes.peer_frames.status import StatusState
 
             self._PeerDirection = Direction
             self._PeerOperationStatus = OperationStatus
             self._PeerPaneDescriptor = PaneDescriptor
             self._PeerPaneKind = PaneKind
+            self._PeerShellState = ShellState
             self._peerBackend = QtAdsPeerFrameBackend()
             self._peerWorkspace = WorkspaceModel(self._peerBackend)
             self._peerBackend.bind_model(self._peerWorkspace)
             self._peerDocumentViews = DocumentViewRegistry()
+            self._peerShellLifecycles = ShellLifecycleRegistry()
             self._peerEditorLifecycleMigration = False
             self._peerDirtyCloseChooser = self._choosePeerDirtyClose
+            self._peerShellCloseChooser = self._choosePeerShellClose
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
             self._peerStatusProjector = QtAdsStatusProjector(
@@ -1214,7 +1256,87 @@ class MainWindow(QtWidgets.QMainWindow):
         host.currentShellStateChanged.connect(
             lambda host=host: self._updateShellDockTitle(host)
         )
+        if self._peerFrameMode:
+            host.currentShellChanged.connect(
+                lambda host=host: self._bindPeerShellLifecycle(host)
+            )
         return host
+
+    def _bindPeerShellLifecycle(self, host):
+        dock = self._shellHosts.get(host)
+        shell = host.getCurrentShell()
+        if dock is None or shell is None:
+            return
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
+        if pane_id not in self._peerWorkspace.panes:
+            return
+        if pane_id in self._peerShellLifecycles.pane_ids:
+            return
+        lifecycle = _PyzoShellLifecycle(self, pane_id, shell)
+        policy = self._peerShellLifecycles.register_shell(pane_id, lifecycle)
+        result = self._peerWorkspace.set_close_policy(pane_id, policy)
+        if not result.applied:
+            self._peerShellLifecycles.forget_shell(pane_id)
+            raise RuntimeError(result.detail)
+
+    def _requestPeerShellClose(self, shell):
+        host = next(
+            (host for host in pyzo.shells.hosts if shell in host.getShells()),
+            None,
+        )
+        dock = self._shellHosts.get(host)
+        if dock is None:
+            return 0
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
+        result = self._peerWorkspace.request_close_pane(
+            pane_id, self._resolvePeerShellClose
+        )
+        return 1 if result.applied else 0
+
+    def _choosePeerShellClose(self, _pane_id, lifecycle):
+        return lifecycle.choose_live_close()
+
+    def _askPeerShellClose(self, lifecycle):
+        state = lifecycle.shell_state()
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setWindowTitle(translate("shell", "Close shell"))
+        dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        dialog.setText(
+            translate("shell", "Terminate this interpreter and close its shell?")
+        )
+        if state is self._PeerShellState.DEBUGGING:
+            detail = translate(
+                "shell", "The active debugging session and its stack state will be lost."
+            )
+        elif state is self._PeerShellState.RUNNING:
+            detail = translate("shell", "The interpreter is currently executing code.")
+        elif state is self._PeerShellState.IDLE:
+            detail = translate("shell", "The interpreter is still running.")
+        else:
+            detail = translate(
+                "shell",
+                "The interpreter is still starting or its state is unknown.",
+            )
+        dialog.setInformativeText(detail)
+        terminate = dialog.addButton(
+            translate("shell", "Terminate and close"),
+            QtWidgets.QMessageBox.ButtonRole.DestructiveRole,
+        )
+        cancel = dialog.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        return "terminate" if dialog.clickedButton() is terminate else "cancel"
+
+    def _resolvePeerShellClose(self, votes):
+        return self._peerShellLifecycles.resolve_confirmations(
+            votes, self._peerShellCloseChooser
+        )
+
+    def _closeCommittedPeerShell(self, pane_id, shell, *, terminate):
+        assert pane_id not in self._peerWorkspace.panes
+        result = shell.closeShellCommitted(terminate_kernel=terminate)
+        if not result:
+            raise RuntimeError("committed shell close did not complete")
 
     def _updateShellDockTitle(self, host):
         from pyzo.core.shellStack import shellTitle
@@ -1265,7 +1387,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._onFocusedDockWidgetChanged(second_shell_dock)
             assert pyzo.shells.getCurrentShell() is second_shell
             self._testPeerPaneMovementMatrix(second_host, second_shell)
-        second_shell.closeShell()
+            original_chooser = self._peerShellCloseChooser
+            self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "cancel"
+            assert second_shell.closeShell() == 0
+            assert second_shell in tuple(pyzo.shells)
+            self._peerShellCloseChooser = (
+                lambda _pane_id, _lifecycle: "terminate"
+            )
+            assert second_shell.closeShell() == 1
+            self._peerShellCloseChooser = original_chooser
+        else:
+            second_shell.closeShell()
         assert len(pyzo.shells.hosts) == 1
         assert pyzo.shells.getCurrentShell() is first_shell
         print("Pyzo independent shell-dock smoke test passed")
@@ -1531,7 +1663,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if dock is not None:
             host.dispose()
             if self._peerFrameMode:
-                self._removePeerDock(dock)
+                pane_id = self._peerBackend._pane_id_from_dock(dock)
+                if pane_id in self._peerWorkspace.panes:
+                    self._removePeerDock(dock)
             else:
                 self._dockManager.removeDockWidget(dock)
                 dock.deleteLater()
