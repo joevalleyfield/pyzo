@@ -9,6 +9,7 @@ It also has a find/replace widget that is at the bottom of the editor.
 """
 
 import os
+import itertools
 import sys
 import time
 import re
@@ -140,6 +141,9 @@ def get_shortest_unique_filename(filename, filenames):
 
 
 # todo: some management stuff could (should?) go here
+_fileItemLifecycleIds = itertools.count(1)
+
+
 class FileItem:
     """FileItem(editor)
 
@@ -151,6 +155,7 @@ class FileItem:
     def __init__(self, editor):
         # Store editor
         self._editor = editor
+        self._lifecycleId = next(_fileItemLifecycleIds)
 
         # Init pinned state
         self._pinned = False
@@ -159,6 +164,12 @@ class FileItem:
     def editor(self):
         """Get the editor component corresponding to this item."""
         return self._editor
+
+    @property
+    def lifecycleId(self):
+        """Stable identity for this open document across name and Qt wrappers."""
+
+        return self._lifecycleId
 
     @property
     def id(self):

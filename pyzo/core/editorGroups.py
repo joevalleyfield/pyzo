@@ -26,12 +26,16 @@ class EditorGroupManager(QtCore.QObject):
         parent=None,
         group_factory: Callable[[], object] | None = None,
         group_remover: Callable[[object], None] | None = None,
+        close_requester: Callable[[object], object] | None = None,
+        retain_last_empty_group: bool = True,
     ):
         super().__init__(parent)
         self._groups = []
         self._activeGroup = None
         self._groupFactory = group_factory
         self._groupRemover = group_remover
+        self._closeRequester = close_requester
+        self._retainLastEmptyGroup = retain_last_empty_group
         for group in groups:
             self.addGroup(group)
 
@@ -137,17 +141,32 @@ class EditorGroupManager(QtCore.QObject):
         group = self._activeGroup if editor is None else self._group_for_editor(editor)
         if group is None:
             return None
+        editor = editor or group.getCurrentEditor()
+        if self._closeRequester is not None and editor is not None:
+            return self._closeRequester(editor)
+        return self.closeFileCommitted(editor)
+
+    def closeFileCommitted(self, editor=None):
+        """Close after application lifecycle negotiation has committed."""
+
+        group = self._activeGroup if editor is None else self._group_for_editor(editor)
+        if group is None:
+            return None
         result = group.closeFile(editor)
         self._remove_group_if_empty(group)
         return result
 
     def _remove_group_if_empty(self, group):
-        if tuple(group) or len(self._groups) <= 1:
+        if tuple(group) or (self._retainLastEmptyGroup and len(self._groups) <= 1):
             return
         index = self._groups.index(group)
         self._groups.remove(group)
         if self._activeGroup is group:
-            self._activeGroup = self._groups[min(index, len(self._groups) - 1)]
+            self._activeGroup = (
+                self._groups[min(index, len(self._groups) - 1)]
+                if self._groups
+                else None
+            )
         if self._groupRemover is not None:
             self._groupRemover(group)
         self.currentChanged.emit()
@@ -244,7 +263,16 @@ def install_editor_group_manager(
     parent=None,
     group_factory=None,
     group_remover=None,
+    close_requester=None,
+    retain_last_empty_group=True,
 ):
-    manager = EditorGroupManager(groups, parent, group_factory, group_remover)
+    manager = EditorGroupManager(
+        groups,
+        parent,
+        group_factory,
+        group_remover,
+        close_requester,
+        retain_last_empty_group,
+    )
     pyzo.editors = manager
     return manager

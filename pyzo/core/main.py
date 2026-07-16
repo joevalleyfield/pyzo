@@ -461,6 +461,23 @@ class _PeerPaneFocusFilter(QtCore.QObject):
         return False
 
 
+class _PyzoEditorDocumentLifecycle:
+    """Adapt one current Pyzo document to application lifecycle ownership."""
+
+    def __init__(self, main_window, pane_id, item):
+        self._mainWindow = main_window
+        self._paneId = pane_id
+        self._item = item
+
+    def is_dirty(self):
+        return self._item.dirty
+
+    def close_document(self):
+        self._mainWindow._closeCommittedPeerEditor(
+            self._paneId, self._item.editor
+        )
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
@@ -559,7 +576,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.restoreState()
         self.paintNow()
         self.restoreState()
-        pyzo.editors.restoreEditorState()
+        if self._peerFrameMode:
+            self._restoreLegacyEditorStateIntoPeerPanes()
+        else:
+            pyzo.editors.restoreEditorState()
 
         # Instantiate view manager
         pyzo.viewManager = ViewManager()
@@ -653,6 +673,7 @@ class MainWindow(QtWidgets.QMainWindow):
             from spikes.peer_frames.qtads_backend import QtAdsPeerFrameBackend
             from spikes.peer_frames.qtads_commands import QtAdsCommandProjector
             from spikes.peer_frames.qtads_status import QtAdsStatusProjector
+            from spikes.peer_frames.lifecycle import DocumentViewRegistry
             from spikes.peer_frames.status import StatusState
 
             self._PeerDirection = Direction
@@ -661,6 +682,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerBackend = QtAdsPeerFrameBackend()
             self._peerWorkspace = WorkspaceModel(self._peerBackend)
             self._peerBackend.bind_model(self._peerWorkspace)
+            self._peerDocumentViews = DocumentViewRegistry()
+            self._peerEditorLifecycleMigration = False
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
             self._peerStatusProjector = QtAdsStatusProjector(
@@ -748,6 +771,10 @@ class MainWindow(QtWidgets.QMainWindow):
             parent=self,
             group_factory=self._createEditorHost,
             group_remover=self._removeEditorHost,
+            close_requester=(
+                self._requestPeerEditorClose if self._peerFrameMode else None
+            ),
+            retain_last_empty_group=not self._peerFrameMode,
         )
         self._primaryEditors = pyzo.editors.createGroup()
         self._editorDock = self._editorHosts[self._primaryEditors]
@@ -1045,11 +1072,75 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
         self._editorHosts[host] = dock
         host._tabs.fileTabsChanged.connect(
-            lambda host=host: self._updateEditorDockTitle(host)
+            lambda host=host: self._editorHostContentChanged(host)
         )
         if self._menusReady:
             host.addContextMenu()
         return host
+
+    def _editorHostContentChanged(self, host):
+        self._updateEditorDockTitle(host)
+        if self._peerFrameMode:
+            self._bindPeerEditorLifecycle(host)
+
+    def _restoreLegacyEditorStateIntoPeerPanes(self):
+        """Convert legacy nested editor state at one explicit migration boundary."""
+
+        assert not self._peerEditorLifecycleMigration
+        self._peerEditorLifecycleMigration = True
+        try:
+            pyzo.editors.restoreEditorState()
+        finally:
+            self._peerEditorLifecycleMigration = False
+        for host in pyzo.editors.groups:
+            if host._tabs.count() > 1:
+                raise RuntimeError(
+                    "legacy editor-state conversion left a multi-document peer pane"
+                )
+            self._bindPeerEditorLifecycle(host)
+
+    def _bindPeerEditorLifecycle(self, host):
+        if self._peerEditorLifecycleMigration:
+            return
+        dock = self._editorHosts.get(host)
+        item = host._tabs.currentItem()
+        if dock is None or item is None:
+            return
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
+        document_id = f"pyzo-document-{item.lifecycleId}"
+        bound_document_id = self._peerDocumentViews.document_id_for_view(pane_id)
+        if bound_document_id == document_id:
+            return
+        if bound_document_id is not None:
+            raise RuntimeError(
+                f"editor pane {pane_id} is already bound to {bound_document_id}"
+            )
+        lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item)
+        policy = self._peerDocumentViews.register_view(
+            pane_id,
+            document_id,
+            lifecycle,
+            is_pinned=lambda item=item: item.pinned,
+        )
+        result = self._peerWorkspace.set_close_policy(pane_id, policy)
+        if not result.applied:
+            self._peerDocumentViews.forget_view(pane_id)
+            raise RuntimeError(result.detail)
+
+    def _requestPeerEditorClose(self, editor):
+        host = pyzo.editors._group_for_editor(editor)
+        dock = self._editorHosts.get(host)
+        if dock is None:
+            return 0
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
+        result = self._peerWorkspace.request_close_pane(pane_id)
+        return 1 if result.applied else 0
+
+    def _closeCommittedPeerEditor(self, pane_id, editor):
+        assert pane_id not in self._peerWorkspace.panes
+        result = pyzo.editors.closeFileCommitted(editor)
+        if not result:
+            raise RuntimeError("committed clean editor close did not complete")
 
     def _updateEditorDockTitle(self, host):
         dock = self._editorHosts.get(host)
@@ -1065,7 +1156,9 @@ class MainWindow(QtWidgets.QMainWindow):
         dock = self._editorHosts.pop(host, None)
         if dock is not None:
             if self._peerFrameMode:
-                self._removePeerDock(dock)
+                pane_id = self._peerBackend._pane_id_from_dock(dock)
+                if pane_id in self._peerWorkspace.panes:
+                    self._removePeerDock(dock)
             else:
                 self._dockManager.removeDockWidget(dock)
                 dock.deleteLater()
@@ -1240,6 +1333,72 @@ class MainWindow(QtWidgets.QMainWindow):
         assert self._peerCommandProjector.projected_window_ids == peer_window_ids
         pyzo.toolManager.closeTool("pyzofilebrowser")
         print("Pyzo real-pane movement matrix smoke test passed")
+        self._testCleanPeerEditorLifecycle()
+
+    def _testCleanPeerEditorLifecycle(self):
+        editors = tuple(pyzo.editors)
+        assert len(editors) == 2
+        closing, survivor = editors
+        closing_host = pyzo.editors._group_for_editor(closing)
+        survivor_host = pyzo.editors._group_for_editor(survivor)
+        closing_dock = self._editorHosts[closing_host]
+        survivor_dock = self._editorHosts[survivor_host]
+        closing_pane = self._peerBackend._pane_id_from_dock(closing_dock)
+        survivor_pane = self._peerBackend._pane_id_from_dock(survivor_dock)
+        closing_document = self._peerDocumentViews.document_id_for_view(closing_pane)
+        survivor_document = self._peerDocumentViews.document_id_for_view(survivor_pane)
+        assert closing_document is not None
+        assert survivor_document is not None
+
+        assert pyzo.editors.closeFile(closing) == 1
+        assert closing not in tuple(pyzo.editors)
+        assert survivor in tuple(pyzo.editors)
+        assert closing_host not in pyzo.editors.groups
+        assert survivor_host in pyzo.editors.groups
+        assert closing_host not in self._editorHosts
+        assert closing_pane not in self._peerWorkspace.panes
+        assert closing_document not in self._peerDocumentViews.document_ids
+        assert self._peerDocumentViews.document_id_for_view(survivor_pane) == (
+            survivor_document
+        )
+        assert not self._peerWorkspace.shutdown_requested
+
+        assert pyzo.editors.closeFile(survivor) == 1
+        assert tuple(pyzo.editors) == ()
+        assert pyzo.editors.groups == ()
+        assert pyzo.editors.activeGroup is None
+        assert survivor_host not in self._editorHosts
+        assert survivor_pane not in self._peerWorkspace.panes
+        assert self._peerDocumentViews.document_ids == frozenset()
+        assert any(
+            pane.kind is self._PeerPaneKind.SHELL
+            for pane in self._peerWorkspace.panes.values()
+        )
+        assert not self._peerWorkspace.shutdown_requested
+
+        replacement = pyzo.editors.newFile()
+        replacement_host = pyzo.editors._group_for_editor(replacement.editor)
+        replacement_dock = self._editorHosts[replacement_host]
+        replacement_pane = self._peerBackend._pane_id_from_dock(replacement_dock)
+        assert pyzo.editors.groups == (replacement_host,)
+        assert pyzo.editors.activeGroup is replacement_host
+        assert self._peerWorkspace.panes[replacement_pane].kind is (
+            self._PeerPaneKind.EDITOR
+        )
+        assert self._peerDocumentViews.document_id_for_view(replacement_pane) is not None
+
+        QtCore.QCoreApplication.sendPostedEvents(
+            None, QtCore.QEvent.Type.DeferredDelete
+        )
+        QtWidgets.QApplication.processEvents()
+        self._peerStatusProjector.refresh()
+        self._peerCommandProjector.refresh()
+        live_window_ids = {
+            id(window) for window in self._peerBackend.frame_windows.values()
+        }
+        assert self._peerStatusProjector.projected_window_ids == live_window_ids
+        assert self._peerCommandProjector.projected_window_ids == live_window_ids
+        print("Pyzo clean editor lifecycle matrix smoke test passed")
 
     def removeShellHost(self, host):
         dock = self._shellHosts.pop(host, None)
