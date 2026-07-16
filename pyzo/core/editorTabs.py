@@ -1674,27 +1674,33 @@ class EditorTabs(QtWidgets.QWidget):
         Returns 0 if cancelled.
         """
 
-        # should we ask to save the file?
-        if editor.document().isModified():
-            # Ask user what to do
-            close_txt, discard_txt, cancel_txt, save_txt = self._get_action_texts()
-            result = simpleDialog(
-                editor,
-                translate("editor", "Closing"),
-                translate("editor", "Save modified file?"),
-                [discard_txt, cancel_txt, save_txt],
-                save_txt,
-            )
+        choice = self.askDirtyCloseChoice(editor)
+        if choice == "clean":
+            return 1
+        if choice == "save":
+            return 2 if self.saveFile(editor) else 0
+        if choice == "discard":
+            return 3
+        return 0
 
-            # Get result and act
-            if result == save_txt:
-                return 2 if self.saveFile(editor) else 0
-            elif result == discard_txt:
-                return 3
-            else:  # cancel
-                return 0
+    def askDirtyCloseChoice(self, editor):
+        """Collect a close choice without saving or discarding the document."""
 
-        return 1
+        if not editor.document().isModified():
+            return "clean"
+        _close_txt, discard_txt, cancel_txt, save_txt = self._get_action_texts()
+        result = simpleDialog(
+            editor,
+            translate("editor", "Closing"),
+            translate("editor", "Save modified file?"),
+            [discard_txt, cancel_txt, save_txt],
+            save_txt,
+        )
+        if result == save_txt:
+            return "save"
+        if result == discard_txt:
+            return "discard"
+        return "cancel"
 
     def closeFile(self, editor=None):
         """Close the selected (or current) editor.

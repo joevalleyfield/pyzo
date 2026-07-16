@@ -11,6 +11,7 @@ import sys
 import time
 import base64
 import gc
+import tempfile
 import weakref
 from queue import Queue, Empty
 
@@ -472,7 +473,17 @@ class _PyzoEditorDocumentLifecycle:
     def is_dirty(self):
         return self._item.dirty
 
-    def close_document(self):
+    def save_document(self):
+        host = pyzo.editors._group_for_editor(self._item.editor)
+        return bool(host is not None and host.saveFile(self._item.editor))
+
+    def choose_dirty_close(self):
+        host = pyzo.editors._group_for_editor(self._item.editor)
+        return "cancel" if host is None else host.askDirtyCloseChoice(self._item.editor)
+
+    def close_document(self, disposition):
+        if disposition.value == "discarded":
+            self._item.editor.document().setModified(False)
         self._mainWindow._closeCommittedPeerEditor(
             self._paneId, self._item.editor
         )
@@ -666,6 +677,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             from spikes.peer_frames.contract import (
                 Direction,
+                OperationStatus,
                 PaneDescriptor,
                 PaneKind,
                 WorkspaceModel,
@@ -677,6 +689,7 @@ class MainWindow(QtWidgets.QMainWindow):
             from spikes.peer_frames.status import StatusState
 
             self._PeerDirection = Direction
+            self._PeerOperationStatus = OperationStatus
             self._PeerPaneDescriptor = PaneDescriptor
             self._PeerPaneKind = PaneKind
             self._peerBackend = QtAdsPeerFrameBackend()
@@ -684,6 +697,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerBackend.bind_model(self._peerWorkspace)
             self._peerDocumentViews = DocumentViewRegistry()
             self._peerEditorLifecycleMigration = False
+            self._peerDirtyCloseChooser = self._choosePeerDirtyClose
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
             self._peerStatusProjector = QtAdsStatusProjector(
@@ -1107,6 +1121,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if dock is None or item is None:
             return
         pane_id = self._peerBackend._pane_id_from_dock(dock)
+        if pane_id not in self._peerWorkspace.panes:
+            return
         document_id = f"pyzo-document-{item.lifecycleId}"
         bound_document_id = self._peerDocumentViews.document_id_for_view(pane_id)
         if bound_document_id == document_id:
@@ -1133,8 +1149,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if dock is None:
             return 0
         pane_id = self._peerBackend._pane_id_from_dock(dock)
-        result = self._peerWorkspace.request_close_pane(pane_id)
+        result = self._peerWorkspace.request_close_pane(
+            pane_id, self._resolvePeerEditorClose
+        )
         return 1 if result.applied else 0
+
+    def _choosePeerDirtyClose(self, _document_id, lifecycle):
+        return lifecycle.choose_dirty_close()
+
+    def _resolvePeerEditorClose(self, votes):
+        return self._peerDocumentViews.resolve_confirmations(
+            votes, self._peerDirtyCloseChooser
+        )
 
     def _closeCommittedPeerEditor(self, pane_id, editor):
         assert pane_id not in self._peerWorkspace.panes
@@ -1399,6 +1425,106 @@ class MainWindow(QtWidgets.QMainWindow):
         assert self._peerStatusProjector.projected_window_ids == live_window_ids
         assert self._peerCommandProjector.projected_window_ids == live_window_ids
         print("Pyzo clean editor lifecycle matrix smoke test passed")
+        self._testDirtyPeerEditorLifecycle(replacement)
+
+    def _testDirtyPeerEditorLifecycle(self, replacement):
+        editor = replacement.editor
+        host = pyzo.editors._group_for_editor(editor)
+        editor.setPlainText("unsaved peer buffer\n")
+        editor.document().setModified(True)
+        before = self._peerWorkspace.serialize_layout()
+
+        original_save = host.saveFile
+        original_chooser = self._peerDirtyCloseChooser
+        try:
+            host.saveFile = lambda _editor: False
+            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "save"
+            assert pyzo.editors.closeFile(editor) == 0
+            assert self._peerWorkspace.serialize_layout() == before
+            assert editor.document().isModified()
+
+            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "cancel"
+            assert pyzo.editors.closeFile(editor) == 0
+            assert self._peerWorkspace.serialize_layout() == before
+            assert editor.document().isModified()
+
+            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "discard"
+            assert pyzo.editors.closeFile(editor) == 1
+            assert editor not in tuple(pyzo.editors)
+        finally:
+            host.saveFile = original_save
+            self._peerDirtyCloseChooser = original_chooser
+
+        file_descriptor, filename = tempfile.mkstemp(
+            prefix="pyzo-peer-dirty-", suffix=".py"
+        )
+        os.close(file_descriptor)
+        try:
+            with open(filename, "w", encoding="utf-8") as stream:
+                stream.write("before = True\n")
+            saved_item = pyzo.editors.loadFile(filename, ignoreFail=True)
+            assert saved_item is not None
+            saved_item.editor.setPlainText("after = True\n")
+            saved_item.editor.document().setModified(True)
+            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "save"
+            assert pyzo.editors.closeFile(saved_item.editor) == 1
+            with open(filename, encoding="utf-8") as stream:
+                assert stream.read() == "after = True\n"
+        finally:
+            self._peerDirtyCloseChooser = original_chooser
+            try:
+                os.remove(filename)
+            except OSError:
+                pass
+
+        first = pyzo.editors.newFile()
+        second = pyzo.editors.newFile()
+        first.editor.setPlainText("first dirty\n")
+        second.editor.setPlainText("second dirty\n")
+        first.editor.document().setModified(True)
+        second.editor.document().setModified(True)
+        first_host = pyzo.editors._group_for_editor(first.editor)
+        second_host = pyzo.editors._group_for_editor(second.editor)
+        first_pane = self._peerBackend._pane_id_from_dock(
+            self._editorHosts[first_host]
+        )
+        second_pane = self._peerBackend._pane_id_from_dock(
+            self._editorHosts[second_host]
+        )
+        assert self._peerWorkspace.tab(second_pane, first_pane).applied
+        frame_id = next(
+            frame["id"]
+            for frame in self._peerWorkspace.serialize_layout()["frames"]
+            if any(
+                first_pane in group["panes"]
+                for group in frame["groups"]
+            )
+        )
+        before = self._peerWorkspace.serialize_layout()
+        choices = iter(("discard", "cancel"))
+        self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: next(choices)
+        result = self._peerWorkspace.request_close_frame(
+            frame_id, self._resolvePeerEditorClose
+        )
+        assert result.status is self._PeerOperationStatus.CANCELLED
+        assert self._peerWorkspace.serialize_layout() == before
+        assert first.editor.document().isModified()
+        assert second.editor.document().isModified()
+
+        choices = iter(("discard", "discard"))
+        self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: next(choices)
+        result = self._peerWorkspace.request_close_frame(
+            frame_id, self._resolvePeerEditorClose
+        )
+        self._peerDirtyCloseChooser = original_chooser
+        assert result.applied
+        assert first.editor not in tuple(pyzo.editors)
+        assert second.editor not in tuple(pyzo.editors)
+        assert not self._peerWorkspace.shutdown_requested
+
+        final_item = pyzo.editors.newFile()
+        assert pyzo.editors.getCurrentEditor() is final_item.editor
+        print("Pyzo dirty editor lifecycle matrix smoke test passed")
 
     def removeShellHost(self, host):
         dock = self._shellHosts.pop(host, None)
