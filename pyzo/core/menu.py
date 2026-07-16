@@ -665,7 +665,7 @@ class FileMenu(Menu):
         self.addItem(
             translate("menu", "Quit Pyzo ::: Close the application."),
             icons.cancel,
-            pyzo.main.close,
+            pyzo.main.quit,
         )
 
         # Start disabled

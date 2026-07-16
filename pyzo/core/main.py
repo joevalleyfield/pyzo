@@ -753,7 +753,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 ShellState,
             )
             from spikes.peer_frames.application_lifecycle import (
+                ApplicationExitDisposition,
                 ApplicationFrameLifecycle,
+                ApplicationShutdownCoordinator,
+                CleanupStep,
+                WorkspaceShutdownResult,
             )
             from spikes.peer_frames.status import StatusState
 
@@ -775,6 +779,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerDirtyCloseChooser = self._choosePeerDirtyClose
             self._peerShellCloseChooser = self._choosePeerShellClose
             self._ApplicationFrameLifecycle = ApplicationFrameLifecycle
+            self._ApplicationExitDisposition = ApplicationExitDisposition
+            self._ApplicationShutdownCoordinator = ApplicationShutdownCoordinator
+            self._PeerCleanupStep = CleanupStep
+            self._WorkspaceShutdownResult = WorkspaceShutdownResult
             QtWidgets.qApp.setQuitOnLastWindowClosed(False)
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
@@ -788,8 +796,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 CommandDescriptor(
                     "application.quit",
                     translate("menu", "Quit Pyzo"),
-                    lambda _context: pyzo.main.close(),
+                    lambda _context: pyzo.main.quit(),
                     shortcuts=("Ctrl+Q",),
+                )
+            )
+            pyzo.commands.register(
+                CommandDescriptor(
+                    "application.restart",
+                    translate("menu", "Restart Pyzo"),
+                    lambda _context: pyzo.main.restart(),
                 )
             )
             pyzo.commands.register(
@@ -806,7 +821,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerCommandProjector = QtAdsCommandProjector(
                 pyzo.commands,
                 self._dockManager,
-                (VIEW_STATUS_COMMAND, "application.quit"),
+                (VIEW_STATUS_COMMAND, "application.restart", "application.quit"),
             )
         else:
             # The previous main-window integration remains as a control. Its
@@ -1408,10 +1423,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _installPeerApplicationLifecycle(self):
         self._peerDefaultFrameErrors = []
+        self._peerApplicationExitErrors = []
+        self._peerShutdownCoordinator = self._ApplicationShutdownCoordinator(
+            confirm_exit=self._confirmPeerApplicationExit,
+            request_workspace_shutdown=self._requestPeerWorkspaceShutdown,
+            cleanup_steps=(
+                self._PeerCleanupStep("config", pyzo.saveConfig),
+                self._PeerCleanupStep("history", pyzo.command_history.save),
+                self._PeerCleanupStep("server", commandline.stop_our_server),
+                self._PeerCleanupStep(
+                    "kernels", pyzo.localKernelManager.terminateAll
+                ),
+                self._PeerCleanupStep("tools", self._cleanupRemainingPeerTools),
+                self._PeerCleanupStep("threads", self._stopPeerApplicationThreads),
+                self._PeerCleanupStep(
+                    "projectors", self._peerStatusProjector.close
+                ),
+                self._PeerCleanupStep("backend", self._peerBackend.close),
+            ),
+            finish_quit=QtWidgets.qApp.exit,
+            replace_process=self._replacePyzoProcess,
+            log_error=self._logPeerApplicationExitError,
+        )
         self._peerApplicationLifecycle = self._ApplicationFrameLifecycle(
             has_independent_handle=lambda: sys.platform == "darwin",
             frame_count=lambda: len(self._peerWorkspace.frames),
-            request_quit=lambda: callLater(self.close),
+            request_quit=lambda: callLater(self.quit),
             create_configured_frame=self._createConfiguredPeerDefaultFrame,
             create_factory_frame=self._createFactoryPeerDefaultFrame,
             log_error=self._logPeerDefaultFrameError,
@@ -1421,6 +1458,58 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.qApp.applicationStateChanged.connect(
                 self._onPeerApplicationStateChanged
             )
+
+    def _confirmPeerApplicationExit(self, _disposition):
+        if not pyzo.config.advanced.alwaysAskWhenClosingPyzo:
+            return True
+        dialog = QtWidgets.QMessageBox(None)
+        dialog.setWindowTitle("Pyzo")
+        dialog.setText(translate("main", "Do you really want to close Pyzo?"))
+        close_button = dialog.addButton(QtWidgets.QMessageBox.StandardButton.Close)
+        cancel_button = dialog.addButton(
+            QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is close_button
+
+    def _requestPeerWorkspaceShutdown(self):
+        result = self._peerWorkspace.request_shutdown(self._resolvePeerClose)
+        return self._WorkspaceShutdownResult(
+            result.applied, result.cleanup_errors
+        )
+
+    def _cleanupRemainingPeerTools(self):
+        errors = []
+        for toolname in tuple(pyzo.toolManager.getLoadedTools()):
+            tool = pyzo.toolManager.getTool(toolname)
+            if hasattr(tool, "cleanUp"):
+                try:
+                    tool.cleanUp()
+                except Exception as error:
+                    errors.append(f"{toolname}: {error}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def _stopPeerApplicationThreads(self):
+        import threading
+
+        errors = []
+        for thread in threading.enumerate():
+            if hasattr(thread, "stop"):
+                try:
+                    thread.stop(0.1)
+                except Exception as error:
+                    errors.append(f"{thread.name}: {error}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def _logPeerApplicationExitError(self, message):
+        self._peerApplicationExitErrors.append(message)
+        print(message, file=sys.stderr)
+
+    def _requestPeerApplicationExit(self, disposition):
+        return self._peerShutdownCoordinator.request(disposition)
 
     def _onPeerApplicationStateChanged(self, state):
         if state == QtCore.Qt.ApplicationState.ApplicationActive:
@@ -2030,6 +2119,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for window in self._peerBackend.frame_windows.values()
         )
         assert pyzo.commands.descriptors[0].id == "application.quit"
+        assert pyzo.commands.descriptors[1].id == "application.restart"
         assert self._peerCommandProjector.native_menus == (sys.platform == "darwin")
         peer_windows = tuple(self._peerBackend.frame_windows.values())
         status_was_visible = self.statusBar().isVisible()
@@ -2054,11 +2144,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerCommandProjector.action_for(window, "application.quit")
             for window in peer_windows
         )
+        peer_restart_actions = tuple(
+            self._peerCommandProjector.action_for(window, "application.restart")
+            for window in peer_windows
+        )
         if sys.platform == "darwin":
             application_menu = self._peerCommandProjector.application_menu_bar
             assert application_menu is not None
             assert application_menu.parent() is None
             assert len({id(action) for action in peer_quit_actions}) == 1
+            assert len({id(action) for action in peer_restart_actions}) == 1
         else:
             assert self._peerCommandProjector.application_menu_bar is None
             assert all(
@@ -2066,19 +2161,31 @@ class MainWindow(QtWidgets.QMainWindow):
                 for window in peer_windows
             )
             assert len({id(action) for action in peer_quit_actions}) == len(peer_windows)
+            assert len({id(action) for action in peer_restart_actions}) == len(
+                peer_windows
+            )
         assert all(
             action.property("applicationCommandId") == "application.quit"
             for action in peer_quit_actions
         )
         quit_action = peer_quit_actions[0]
-        original_close = pyzo.main.close
+        original_quit = pyzo.main.quit
         quit_calls = []
         try:
-            pyzo.main.close = lambda: quit_calls.append(True) or False
+            pyzo.main.quit = lambda: quit_calls.append(True) or False
             quit_action.trigger()
         finally:
-            pyzo.main.close = original_close
+            pyzo.main.quit = original_quit
         assert quit_calls == [True]
+        restart_action = peer_restart_actions[0]
+        original_restart = pyzo.main.restart
+        restart_calls = []
+        try:
+            pyzo.main.restart = lambda: restart_calls.append(True) or False
+            restart_action.trigger()
+        finally:
+            pyzo.main.restart = original_restart
+        assert restart_calls == [True]
 
         container_overlay = self._dockManager.containerOverlay()
         dock_area_overlay = self._dockManager.dockAreaOverlay()
@@ -2251,6 +2358,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         """Override close event handler."""
 
+        if self._peerFrameMode:
+            event.ignore()
+            self.quit()
+            return
+
         # Are we restaring?
         restarting = time.time() - self._closeflag < 1.0  # noqa: F841
 
@@ -2328,14 +2440,24 @@ class MainWindow(QtWidgets.QMainWindow):
         #         print('Number of threads alive:', threading.activeCount())
 
         # Proceed as normal
-        if self._peerFrameMode:
-            self._peerStatusProjector.close()
-            self._peerBackend.close()
-            QtWidgets.qApp.quit()
         super().closeEvent(event)
+
+    def quit(self):
+        """Request application Quit independently from frame closure."""
+
+        if self._peerFrameMode:
+            return self._requestPeerApplicationExit(
+                self._ApplicationExitDisposition.QUIT
+            )
+        return self.close()
 
     def restart(self):
         """Restart Pyzo."""
+
+        if self._peerFrameMode:
+            return self._requestPeerApplicationExit(
+                self._ApplicationExitDisposition.RESTART
+            )
 
         self._closeflag = time.time()
 
@@ -2343,31 +2465,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.close()
 
         if self._closeflag:
-            # Get args
-            args = list(sys.argv)
+            self._replacePyzoProcess()
 
-            if not paths.is_frozen():
-                # Prepend the executable name (required on Linux)
-                lastBit = os.path.basename(sys.executable)
-                args.insert(0, lastBit)
+    def _replacePyzoProcess(self):
+        """Replace this process with a fresh Pyzo process."""
 
-            # When running from the pip entry point pyzo.exe ... (issue #641)
-            if (
-                len(args) == 2
-                and args[0] == "python.exe"
-                and not os.path.isfile(args[1])
-            ):
-                args = ["python.exe", "-m", "pyzo"]
+        # Get args
+        args = list(sys.argv)
 
-            if sys.platform == "win32":
-                # workaround for MSVCRT issue with spaces in arguments
-                #     https://bugs.python.org/issue436259
-                from subprocess import list2cmdline
+        if not paths.is_frozen():
+            # Prepend the executable name (required on Linux)
+            lastBit = os.path.basename(sys.executable)
+            args.insert(0, lastBit)
 
-                args = [list2cmdline([s]) for s in args]
+        # When running from the pip entry point pyzo.exe ... (issue #641)
+        if (
+            len(args) == 2
+            and args[0] == "python.exe"
+            and not os.path.isfile(args[1])
+        ):
+            args = ["python.exe", "-m", "pyzo"]
 
-            # Replace the process!
-            os.execv(sys.executable, args)
+        if sys.platform == "win32":
+            # workaround for MSVCRT issue with spaces in arguments
+            #     https://bugs.python.org/issue436259
+            from subprocess import list2cmdline
+
+            args = [list2cmdline([s]) for s in args]
+
+        # Replace the process!
+        os.execv(sys.executable, args)
 
     def createPopupMenu(self):
         # This menu pops up when right clicking on the menu bar

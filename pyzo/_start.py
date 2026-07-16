@@ -323,7 +323,14 @@ def start():
                 if os.getenv("PYZO_LOG", ""):
                     with open(os.getenv("PYZO_LOG"), "at") as fd:
                         fd.write(msg + "\n")
-                pyzo.main.close()
+                if getattr(pyzo.main, "_peerFrameMode", False):
+                    pyzo.main._peerDirtyCloseChooser = (
+                        lambda _document_id, _lifecycle: "discard"
+                    )
+                    pyzo.main._peerShellCloseChooser = (
+                        lambda _pane_id, _lifecycle: "terminate"
+                    )
+                pyzo.main.quit()
 
         startTime = time.time()
         timer = QtCore.QTimer()
