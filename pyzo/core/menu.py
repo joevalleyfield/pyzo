@@ -1314,7 +1314,10 @@ class ShellMenu(Menu):
         self._shellActions = []
         super().__init__(parent, name)
         pyzo.shells.currentShellChanged.connect(self.onCurrentShellChanged)
+        pyzo.shells.executionShellChanged.connect(self._updateExecutionTarget)
         self.aboutToShow.connect(self._updateShells)
+        self.aboutToShow.connect(self._updateExecutionTarget)
+        self._updateExecutionTarget()
 
     def onCurrentShellChanged(self):
         """Enable/disable shell actions based on wether a shell is available"""
@@ -1432,8 +1435,22 @@ class ShellMenu(Menu):
         menus"""
         return pyzo.shells.getCurrentShell()
 
+    def _updateExecutionTarget(self):
+        action = getattr(self, "_executionTargetAction", None)
+        if action is None:
+            return
+        from pyzo.core.shellStack import shellTitle
+
+        shell = pyzo.shells.getExecutionShell()
+        target = shellTitle(shell) if shell is not None else "None"
+        action.setText("Run/Debug target: " + target)
+
     def build(self):
         """Create the items for the shells menu"""
+
+        self._executionTargetAction = self.addAction("")
+        self._executionTargetAction.setEnabled(False)
+        self.addSeparator()
 
         # Normal shell actions
         self._shellActions = self.buildShellActions()
@@ -1506,7 +1523,7 @@ class ShellMenu(Menu):
             getattr(shell, action)()
 
     def _debugAction(self, action):
-        shell = self.getShell()
+        shell = pyzo.shells.getExecutionShell()
         if shell:
             # Call the specified action
             command = action.upper()
@@ -1598,6 +1615,12 @@ class ShellContextMenu(ShellMenu):
 
         self.buildShellActions()
 
+        self.addItem(
+            "Use as Run/Debug target",
+            None,
+            self._useAsExecutionTarget,
+        )
+
         # This is a subset of the edit menu. Copied manually.
         self.addSeparator()
         self.addItem(
@@ -1649,6 +1672,9 @@ class ShellContextMenu(ShellMenu):
         """Shell actions of this menu operate on the shell specified in the constructor"""
         return self._shell
 
+    def _useAsExecutionTarget(self):
+        pyzo.shells.setExecutionShell(self._shell)
+
     def _editItemCallback(self, action):
         msg = ""
         if action == "opendir":
@@ -1698,6 +1724,11 @@ class ShellTabContextMenu(ShellContextMenu):
     def build(self):
         """Build menu"""
         self.buildShellActions()
+        self.addItem(
+            "Use as Run/Debug target",
+            None,
+            self._useAsExecutionTarget,
+        )
 
     def _updateShells(self):
         pass
@@ -2039,8 +2070,18 @@ class EditorTabContextMenu(Menu):
 
 
 class RunMenu(Menu):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        pyzo.shells.executionShellChanged.connect(self._updateExecutionTarget)
+        self.aboutToShow.connect(self._updateExecutionTarget)
+        self._updateExecutionTarget()
+
     def build(self):
         icons = pyzo.icons
+
+        self._executionTargetAction = self.addAction("")
+        self._executionTargetAction.setEnabled(False)
+        self.addSeparator()
 
         self.addItem(
             translate(
@@ -2148,6 +2189,13 @@ class RunMenu(Menu):
     def _cdonfileexec(self, value):
         pyzo.config.settings.changeDirOnFileExec = bool(value)
 
+    def _updateExecutionTarget(self):
+        from pyzo.core.shellStack import shellTitle
+
+        shell = pyzo.shells.getExecutionShell()
+        target = shellTitle(shell) if shell is not None else "None"
+        self._executionTargetAction.setText("Execution target: " + target)
+
     def _showHelp(self):
         """Show more information about ways to run code."""
         from pyzo.util.pyzowizard import PyzoWizard
@@ -2162,7 +2210,7 @@ class RunMenu(Menu):
         # Init empty error message
         msg = ""
         # Get shell
-        shell = pyzo.shells.getCurrentShell()
+        shell = pyzo.shells.getExecutionShell()
         if shell is None:
             msg += translate("menu", "No shell to run code in.").rstrip() + " "
             # shell = pyzo.shells.addShell()  # issue #335, does not work, somehow

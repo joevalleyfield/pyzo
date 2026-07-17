@@ -296,7 +296,7 @@ def start():
     # Create main window, using the selected locale
     MainWindow(None, appLocale)
 
-    # In test mode, we close after 5 seconds
+    # In test mode, we close after a bounded startup smoke interval.
     # We also write "Closed" to the log (if a filename is provided) which we use
     # in our tests to determine that Pyzo did a successful run.
     if "--test" in sys.argv:
@@ -313,6 +313,10 @@ def start():
 
         import time
 
+        testTimeout = (
+            10.0 if getattr(pyzo.main, "_peerFrameMode", False) else 5.0
+        )
+
         def testrunTimerCallback(*args):
             dt = time.time() - startTime
             print("*** testrunTimerCallback:", dt, "s ***")
@@ -327,13 +331,21 @@ def start():
                     timer.stop()
                     QtWidgets.qApp.exit(1)
                     return
-            if time.time() - startTime > 5.0:
+            if time.time() - startTime > testTimeout:
                 timer.stop()
                 if getattr(pyzo.main, "_peerFrameMode", False) and getattr(
                     pyzo.main, "_peerRunDebugSmoke", {}
                 ).get("phase") != "complete":
                     print(
-                        "Peer run/debug smoke did not complete within 5 seconds",
+                        "Peer run/debug smoke did not complete within {} seconds: phase={}, observation={}".format(
+                            testTimeout,
+                            getattr(pyzo.main, "_peerRunDebugSmoke", {}).get(
+                                "phase"
+                            ),
+                            getattr(pyzo.main, "_peerRunDebugSmoke", {}).get(
+                                "affinity_observation"
+                            ),
+                        ),
                         file=sys.stderr,
                     )
                     QtWidgets.qApp.exit(1)

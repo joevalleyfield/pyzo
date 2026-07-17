@@ -191,20 +191,24 @@ class ShellStackWidget(QtWidgets.QWidget):
         by onCurrentChanged. Sets the debug button.
         """
 
-        if shell is pyzo.shells.getCurrentShell():
-            # Update debug info
-            if shell and shell._debugState:
-                info = shell._debugState
-                self._debugmode = info["debugmode"]
+        execution_shell = getattr(
+            pyzo.shells, "getExecutionShell", pyzo.shells.getCurrentShell
+        )()
+        if shell and shell._debugState:
+            info = shell._debugState
+            self._debugmode = info["debugmode"]
+            self._dbs.setTrace(shell._debugState)
+            if shell is execution_shell:
                 for action in self._debugActions:
                     action.setEnabled(self._debugmode == 2)
                 self._debugActions[-1].setEnabled(self._debugmode > 0)  # Stop
-                self._dbs.setTrace(shell._debugState)
-            else:
+        else:
+            self._debugmode = 0
+            self._dbs.setTrace(None)
+            if shell is execution_shell:
                 for action in self._debugActions:
                     action.setEnabled(False)
-                self._debugmode = 0
-                self._dbs.setTrace(None)
+        if shell is pyzo.shells.getCurrentShell():
             # Send signal
             self.currentShellStateChanged.emit()
 

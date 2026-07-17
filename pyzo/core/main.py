@@ -1889,12 +1889,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if state is None:
             state = self._peerRunDebugSmoke = {"phase": "wait-shell"}
 
-        shell = pyzo.shells.getCurrentShell()
-        if shell is None or not shell._version:
-            return False
-
         phase = state["phase"]
         if phase == "wait-shell":
+            shell = pyzo.shells.getCurrentShell()
+            if shell is None or not shell._version:
+                return False
             fd, path = tempfile.mkstemp(prefix="pyzo-peer-debug-", suffix=".py")
             source = (
                 "peer_run_value = 6 * 7\n"
@@ -1922,8 +1921,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return False
 
-        assert shell is state["shell"]
-        editor = state["editor"]
+        shell = state["shell"]
+        editor = state.get("editor")
         if phase == "wait-run":
             value = shell._request.eval("peer_run_value").result_or_cancel(0.2)
             if value != 42:
@@ -2133,8 +2132,177 @@ class MainWindow(QtWidgets.QMainWindow):
                 return False
             assert pyzo.editors.closeFile(state["editor"]) == 1
             os.remove(state["path"])
-            state["phase"] = "complete"
             print("Pyzo post-mortem re-entry smoke test passed")
+
+            second_shell = pyzo.shells.addShell()
+            state.update(
+                phase="wait-affinity-shell",
+                first_shell=shell,
+                second_shell=second_shell,
+                cwd_directory=tempfile.TemporaryDirectory(
+                    prefix="pyzo-peer-kernel-cwd-"
+                ),
+            )
+            return False
+
+        if phase == "wait-affinity-shell":
+            first_shell = state["first_shell"]
+            second_shell = state["second_shell"]
+            state["affinity_observation"] = {
+                "first_version": first_shell._version,
+                "second_version": second_shell._version,
+            }
+            if not first_shell._version or not second_shell._version:
+                return False
+            first_shell.executeCommand("peer_kernel_identity = 'first'\n")
+            second_shell.executeCommand(
+                "import os; os.chdir({}); peer_kernel_identity = 'second'\n".format(
+                    repr(state["cwd_directory"].name)
+                )
+            )
+            state["phase"] = "wait-affinity-seed"
+            return False
+
+        if phase == "wait-affinity-seed":
+            first_shell = state["first_shell"]
+            second_shell = state["second_shell"]
+            first_identity = first_shell._request.eval(
+                "peer_kernel_identity"
+            ).result_or_cancel(0.2)
+            second_identity = second_shell._request.eval(
+                "peer_kernel_identity"
+            ).result_or_cancel(0.2)
+            state["affinity_observation"] = {
+                "first_identity": first_identity,
+                "second_identity": second_identity,
+                "second_cwd": second_shell.get_kernel_cd(),
+            }
+            if first_identity != "first" or second_identity != "second":
+                return False
+            expected_cwd = os.path.realpath(state["cwd_directory"].name)
+            if second_shell.get_kernel_cd() != expected_cwd:
+                return False
+
+            first_context = first_shell._context
+            second_context = second_shell._context
+            assert pyzo.shells.getExecutionShell() is first_shell
+            second_host = next(
+                host
+                for host in pyzo.shells.hosts
+                if second_shell in host.getShells()
+            )
+            second_dock = self._shellHosts[second_host]
+            self._peerBackend._focused_dock_widget_changed(second_dock)
+            self._onFocusedDockWidgetChanged(second_dock)
+            assert pyzo.shells.getCurrentShell() is second_shell
+            assert pyzo.shells.getExecutionShell() is first_shell
+
+            pyzo.shells.setExecutionShell(second_shell)
+            assert pyzo.shells.getExecutionShell() is second_shell
+            shell_menu = self.menuBar()._menumap["shell"]
+            run_menu = self.menuBar()._menumap["run"]
+            shell_menu._updateExecutionTarget()
+            run_menu._updateExecutionTarget()
+            assert "Run/Debug target:" in shell_menu._executionTargetAction.text()
+            assert second_shell._info.name in shell_menu._executionTargetAction.text()
+            assert second_shell._info.name in run_menu._executionTargetAction.text()
+            assert shell_menu.getShell() is pyzo.shells.getCurrentShell()
+            assert pyzo.shells.getExecutionShell() is second_shell
+            debug_commands = []
+            first_execute_command = first_shell.executeCommand
+            second_execute_command = second_shell.executeCommand
+            first_shell.executeCommand = lambda command: debug_commands.append(
+                ("first", command)
+            )
+            second_shell.executeCommand = lambda command: debug_commands.append(
+                ("second", command)
+            )
+            try:
+                shell_menu._debugAction("START")
+            finally:
+                first_shell.executeCommand = first_execute_command
+                second_shell.executeCommand = second_execute_command
+            assert debug_commands == [("second", "DB START\n")]
+
+            fd, path = tempfile.mkstemp(
+                prefix="pyzo-peer-affinity-", suffix=".py"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(
+                    "peer_affinity_result = 'ran-' + peer_kernel_identity\n"
+                )
+            item = pyzo.editors.loadFile(path, ignoreFail=True)
+            assert item is not None
+            editor = item.editor
+            self._activatePeerPaneForWidget(editor)
+            assert pyzo.shells.getCurrentShell() is second_shell
+            assert pyzo.shells.getExecutionShell() is second_shell
+
+            editor_host = pyzo.editors._group_for_editor(editor)
+            editor_dock = self._editorHosts[editor_host]
+            editor_id = self._peerBackend._pane_id_from_dock(editor_dock)
+            second_id = self._peerBackend._pane_id_from_dock(second_dock)
+
+            def apply_shell_layout(operation):
+                result = operation()
+                assert result.applied, result.detail
+                QtWidgets.QApplication.processEvents()
+                assert first_shell._context is first_context
+                assert second_shell._context is second_context
+                assert second_shell.get_kernel_cd() == expected_cwd
+                assert pyzo.shells.getExecutionShell() is second_shell
+
+            affinity_frame_id = "pyzo-affinity-shell-frame"
+            apply_shell_layout(
+                lambda: self._peerWorkspace.float(second_id, affinity_frame_id)
+            )
+            apply_shell_layout(
+                lambda: self._peerWorkspace.split(
+                    second_id, editor_id, self._PeerDirection.BELOW
+                )
+            )
+            assert affinity_frame_id not in self._peerWorkspace.frames
+            assert run_menu._getShellAndEditor("affinity", False)[0] is second_shell
+            run_menu._runFile((False, False), editor)
+            state.update(
+                phase="wait-affinity-run",
+                editor=editor,
+                path=path,
+                first_context=first_context,
+                second_context=second_context,
+                expected_cwd=expected_cwd,
+            )
+            return False
+
+        if phase == "wait-affinity-run":
+            first_shell = state["first_shell"]
+            second_shell = state["second_shell"]
+            second_result = second_shell._request.eval(
+                "peer_affinity_result"
+            ).result_or_cancel(0.2)
+            if second_result != "ran-second":
+                return False
+            first_result = first_shell._request.eval(
+                "peer_affinity_result"
+            ).result_or_cancel(0.2)
+            assert first_result != "ran-second"
+            assert first_shell._context is state["first_context"]
+            assert second_shell._context is state["second_context"]
+            assert second_shell.get_kernel_cd() == state["expected_cwd"]
+            assert pyzo.editors.closeFile(state["editor"]) == 1
+            os.remove(state["path"])
+            original_chooser = self._peerShellCloseChooser
+            self._peerShellCloseChooser = (
+                lambda _pane_id, _lifecycle: "terminate"
+            )
+            try:
+                assert second_shell.closeShell() == 1
+            finally:
+                self._peerShellCloseChooser = original_chooser
+            assert pyzo.shells.getExecutionShell() is first_shell
+            state["cwd_directory"].cleanup()
+            state["phase"] = "complete"
+            print("Pyzo multi-kernel execution-affinity smoke test passed")
             return True
 
         return phase == "complete"
