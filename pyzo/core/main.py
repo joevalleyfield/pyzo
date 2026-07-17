@@ -2059,6 +2059,21 @@ class MainWindow(QtWidgets.QMainWindow):
             assert editor_dock in self._peerBackend.frame_windows[
                 state["source_frame_id"]
             ].dockWidgets()
+            shell.executeCommand(
+                "peer_selected_result = peer_outer_value * 2\n"
+            )
+            state["phase"] = "wait-postmortem-exec"
+            return False
+
+        if phase == "wait-postmortem-exec":
+            debug_state = shell._debugState or {}
+            assert debug_state.get("debugmode") == 1
+            assert debug_state.get("index") == state["outer_index"]
+            result = shell._request.eval(
+                "peer_selected_result"
+            ).result_or_cancel(0.2)
+            if result != 42:
+                return False
             shell.executeCommand("DB STOP\n")
             state["phase"] = "wait-postmortem-stop"
             return False
