@@ -10,3 +10,7 @@ freeze/pyzo.spec
 *.pyc
 pyzo.egg-info/*
 .DS_Store
+
+# Local smoke-test artifacts.
+/log.txt
+/uv.lock

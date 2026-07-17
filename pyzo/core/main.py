@@ -798,7 +798,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerBackend = QtAdsPeerFrameBackend()
             self._peerWorkspace = WorkspaceModel(self._peerBackend)
             self._peerBackend.bind_model(
-                self._peerWorkspace, self._requestPeerFrameClose
+                self._peerWorkspace,
+                self._requestPeerFrameClose,
+                self._requestPeerPaneClose,
             )
             self._peerDocumentViews = DocumentViewRegistry()
             self._peerShellLifecycles = ShellLifecycleRegistry()
@@ -1492,10 +1494,24 @@ class MainWindow(QtWidgets.QMainWindow):
         result = self._peerWorkspace.request_close_frame(
             frame_id, self._resolvePeerClose
         )
-        lifecycle = getattr(self, "_peerApplicationLifecycle", None)
-        if result.applied and not self._peerWorkspace.frames and lifecycle is not None:
-            lifecycle.zero_frames_reached()
+        self._afterPeerTopologyClose(result)
         return result
+
+    def _requestPeerPaneClose(self, pane_id):
+        result = self._peerWorkspace.request_close_pane(
+            pane_id, self._resolvePeerClose
+        )
+        self._afterPeerTopologyClose(result)
+        return result
+
+    def _afterPeerTopologyClose(self, result):
+        lifecycle = getattr(self, "_peerApplicationLifecycle", None)
+        if (
+            result.applied
+            and not self._peerWorkspace.frames
+            and lifecycle is not None
+        ):
+            lifecycle.zero_frames_reached()
 
     def _installPeerApplicationLifecycle(self):
         self._peerDefaultFrameErrors = []
@@ -2099,7 +2115,8 @@ class MainWindow(QtWidgets.QMainWindow):
         assert closing_document is not None
         assert survivor_document is not None
 
-        assert pyzo.editors.closeFile(closing) == 1
+        closing_dock.requestCloseDockWidget()
+        assert self._peerBackend.last_pane_close_result.applied
         assert closing not in tuple(pyzo.editors)
         assert survivor in tuple(pyzo.editors)
         assert closing_host not in pyzo.editors.groups
@@ -2153,6 +2170,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _testDirtyPeerEditorLifecycle(self, replacement):
         editor = replacement.editor
         host = pyzo.editors._group_for_editor(editor)
+        dock = self._editorHosts[host]
         editor.setPlainText("unsaved peer buffer\n")
         editor.document().setModified(True)
         before = self._peerWorkspace.serialize_layout()
@@ -2162,17 +2180,20 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             host.saveFile = lambda _editor: False
             self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "save"
-            assert pyzo.editors.closeFile(editor) == 0
+            dock.requestCloseDockWidget()
+            assert not self._peerBackend.last_pane_close_result.applied
             assert self._peerWorkspace.serialize_layout() == before
             assert editor.document().isModified()
 
             self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "cancel"
-            assert pyzo.editors.closeFile(editor) == 0
+            dock.requestCloseDockWidget()
+            assert not self._peerBackend.last_pane_close_result.applied
             assert self._peerWorkspace.serialize_layout() == before
             assert editor.document().isModified()
 
             self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "discard"
-            assert pyzo.editors.closeFile(editor) == 1
+            dock.requestCloseDockWidget()
+            assert self._peerBackend.last_pane_close_result.applied
             assert editor not in tuple(pyzo.editors)
         finally:
             host.saveFile = original_save
