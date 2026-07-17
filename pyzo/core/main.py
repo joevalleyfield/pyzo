@@ -2059,6 +2059,56 @@ class MainWindow(QtWidgets.QMainWindow):
             assert editor_dock in self._peerBackend.frame_windows[
                 state["source_frame_id"]
             ].dockWidgets()
+
+            shell_host = next(
+                host for host in pyzo.shells.hosts if shell in host.getShells()
+            )
+            shell_dock = self._shellHosts[shell_host]
+            shell_id = self._peerBackend._pane_id_from_dock(shell_dock)
+            tool_id = next(
+                pane_id
+                for pane_id, pane in self._peerWorkspace.panes.items()
+                if pane.kind is self._PeerPaneKind.TOOL
+            )
+            editor_id = self._peerBackend._pane_id_from_dock(editor_dock)
+            editor_document = editor.document()
+            shell_context = shell._context
+            frames = debug_state["frames"]
+            editor.toggleBreakpoint(5, triState=False)
+            assert editor.breakPoints() == [5]
+
+            def apply_layout(operation):
+                result = operation()
+                assert result.applied, result.detail
+                QtWidgets.QApplication.processEvents()
+                assert shell._context is shell_context
+                assert shell._debugState["debugmode"] == 1
+                assert shell._debugState["index"] == state["outer_index"]
+                assert shell._debugState["frames"] == frames
+                assert shell_host._dbs._lastFrames == frames
+                assert shell_host._dbs._lastIndex == state["outer_index"]
+                assert editor.document() is editor_document
+                assert editor._debugLineIndicator == 6
+                assert editor.breakPoints() == [5]
+
+            apply_layout(
+                lambda: self._peerWorkspace.split(
+                    tool_id, editor_id, self._PeerDirection.RIGHT
+                )
+            )
+            apply_layout(
+                lambda: self._peerWorkspace.split(
+                    editor_id, shell_id, self._PeerDirection.BELOW
+                )
+            )
+            apply_layout(lambda: self._peerWorkspace.tab(editor_id, shell_id))
+            assert editor_dock.dockAreaWidget() is shell_dock.dockAreaWidget()
+            apply_layout(
+                lambda: self._requestPeerFrameClose(state["source_frame_id"])
+            )
+            assert state["source_frame_id"] not in self._peerWorkspace.frames
+            editor.toggleBreakpoint(5, triState=False)
+            assert editor.breakPoints() == []
             shell.executeCommand(
                 "peer_selected_result = peer_outer_value * 2\n"
             )
