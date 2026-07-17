@@ -324,6 +324,13 @@ def start():
                     with open(os.getenv("PYZO_LOG"), "at") as fd:
                         fd.write(msg + "\n")
                 if getattr(pyzo.main, "_peerFrameMode", False):
+                    retained_text = os.getenv("PYZO_EXPECT_EXIT_RETENTION_TEXT")
+                    if retained_text:
+                        item = pyzo.editors.newFile()
+                        item.editor.setPlainText(retained_text)
+                        item.editor.lineEndings = "CRLF"
+                        item.editor.useBom = True
+                        item.editor.document().setModified(True)
                     pyzo.main._peerDirtyCloseChooser = (
                         lambda _document_id, _lifecycle: "discard"
                     )

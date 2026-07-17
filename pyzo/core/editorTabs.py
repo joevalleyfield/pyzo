@@ -1512,6 +1512,10 @@ class EditorTabs(QtWidgets.QWidget):
                 return  # cancel reloading
 
         editor.reload()
+        if getattr(pyzo.main, "_peerFrameMode", False):
+            pyzo.main._retirePeerRecoveryForEditor(
+                editor, destructive_fallback=True
+            )
         self._tabs.updateItems()
 
     def saveFileAs(self, editor=None, saveCopyAs=False):
@@ -1613,6 +1617,11 @@ class EditorTabs(QtWidgets.QWidget):
             m.exec()
             # Return now
             return False
+
+        if getattr(pyzo.main, "_peerFrameMode", False):
+            pyzo.main._retirePeerRecoveryForEditor(
+                editor, destructive_fallback=True
+            )
 
         self._tabs.updateItems()
 

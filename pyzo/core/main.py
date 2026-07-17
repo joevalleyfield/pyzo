@@ -482,8 +482,22 @@ class _PyzoEditorDocumentLifecycle:
         host = pyzo.editors._group_for_editor(self._item.editor)
         return "cancel" if host is None else host.askDirtyCloseChoice(self._item.editor)
 
+    def recovery_snapshot(self):
+        return self._mainWindow._snapshotPeerDocument(self._item)
+
+    def discard_recovery_for_exit(self):
+        self._mainWindow._retirePeerRecoveryForEditor(
+            self._item.editor, destructive_fallback=True
+        )
+        self._item.editor.document().setModified(False)
+
     def close_document(self, disposition):
         if disposition.value == "discarded":
+            self._mainWindow._retirePeerRecoveryForEditor(
+                self._item.editor, destructive_fallback=True
+            )
+            self._item.editor.document().setModified(False)
+        elif disposition.value == "retained":
             self._item.editor.document().setModified(False)
         self._mainWindow._closeCommittedPeerEditor(
             self._paneId, self._item.editor
@@ -654,6 +668,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Instantiate view manager
         pyzo.viewManager = ViewManager()
+        if self._peerFrameMode:
+            self._restorePeerRecoverySession()
+            if os.environ.get("PYZO_EXPECT_RECOVERY_TEXT"):
+                self._testPeerRestoredRecovery()
 
         # Present user with wizard if he/she is new.
         if False:  # pyzo.config.state.newUser:
@@ -759,6 +777,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 CleanupStep,
                 WorkspaceShutdownResult,
             )
+            from spikes.peer_frames.session_recovery import (
+                RecoveryRetentionCoordinator,
+                RecoverySnapshot,
+                RecoveryStore,
+                RecoveryWriteError,
+                file_signature,
+                named_document_id,
+                new_untitled_document_id,
+            )
             from spikes.peer_frames.status import StatusState
 
             self._PeerDirection = Direction
@@ -783,6 +810,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ApplicationShutdownCoordinator = ApplicationShutdownCoordinator
             self._PeerCleanupStep = CleanupStep
             self._WorkspaceShutdownResult = WorkspaceShutdownResult
+            self._RecoverySnapshot = RecoverySnapshot
+            self._RecoveryRetentionCoordinator = RecoveryRetentionCoordinator
+            self._RecoveryStore = RecoveryStore
+            self._RecoveryWriteError = RecoveryWriteError
+            self._peerFileSignature = file_signature
+            self._peerNamedDocumentId = named_document_id
+            self._peerNewUntitledDocumentId = new_untitled_document_id
+            self._peerRecoveryStore = RecoveryStore(
+                os.environ.get("PYZO_RECOVERY_DIR")
+                or os.path.join(pyzo.appDataDir, "session-recovery")
+            )
+            self._peerRecoveryFailureChooser = self._choosePeerRecoveryFailure
+            self._peerRecoveryRetention = RecoveryRetentionCoordinator(
+                self._peerRecoveryStore,
+                lambda documents, error: self._peerRecoveryFailureChooser(
+                    documents, error
+                ),
+            )
             QtWidgets.qApp.setQuitOnLastWindowClosed(False)
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
@@ -1271,6 +1316,10 @@ class MainWindow(QtWidgets.QMainWindow):
         title = item.name if item is not None else "Untitled"
         if item is not None and item.dirty:
             title += " *"
+        if item is not None and getattr(
+            item.editor, "_peerRecoveryConflict", False
+        ):
+            title += " ⚠"
         dock.setWindowTitle(title)
 
     def _removeEditorHost(self, host):
@@ -1412,6 +1461,33 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
         return True
 
+    def _resolvePeerApplicationClose(self, votes):
+        document_votes = tuple(
+            vote
+            for vote in votes
+            if self._peerDocumentViews.document_id_for_view(vote.pane_id)
+            is not None
+        )
+        shell_votes = tuple(
+            vote
+            for vote in votes
+            if vote.pane_id in self._peerShellLifecycles.pane_ids
+        )
+        if len(document_votes) + len(shell_votes) != len(votes):
+            return False
+        if shell_votes and not self._peerShellLifecycles.resolve_confirmations(
+            shell_votes, self._peerShellCloseChooser
+        ):
+            return False
+        if document_votes and not self._peerDocumentViews.resolve_retention(
+            document_votes, self._retainPeerDocuments
+        ):
+            self._peerShellLifecycles.cancel_pending(
+                tuple(vote.pane_id for vote in shell_votes)
+            )
+            return False
+        return True
+
     def _requestPeerFrameClose(self, frame_id):
         result = self._peerWorkspace.request_close_frame(
             frame_id, self._resolvePeerClose
@@ -1474,10 +1550,189 @@ class MainWindow(QtWidgets.QMainWindow):
         return dialog.clickedButton() is close_button
 
     def _requestPeerWorkspaceShutdown(self):
-        result = self._peerWorkspace.request_shutdown(self._resolvePeerClose)
+        result = self._peerWorkspace.request_shutdown(
+            self._resolvePeerApplicationClose
+        )
         return self._WorkspaceShutdownResult(
             result.applied, result.cleanup_errors
         )
+
+    def _recoveryIdForItem(self, item):
+        editor = item.editor
+        recovery_id = getattr(editor, "_peerRecoveryId", None)
+        if recovery_id is None:
+            recovery_id = (
+                self._peerNamedDocumentId(item.filename)
+                if item.filename
+                else self._peerNewUntitledDocumentId()
+            )
+            editor._peerRecoveryId = recovery_id
+        return recovery_id
+
+    def _snapshotPeerDocument(self, item):
+        from pyzo.core.editor import getEncodingFromMagic
+
+        editor = item.editor
+        text = editor.toPlainText()
+        return self._RecoverySnapshot(
+            document_id=self._recoveryIdForItem(item),
+            filename=item.filename or None,
+            display_name=item.name,
+            text=text,
+            encoding=getEncodingFromMagic(text[:200]),
+            use_bom=bool(editor.useBom),
+            line_endings=editor.lineEndingsHumanReadable,
+            disk_signature=getattr(
+                editor,
+                "_peerRecoveryDiskSignature",
+                self._peerFileSignature(item.filename or None),
+            ),
+        )
+
+    def _restorePeerRecoverySession(self):
+        loaded = self._peerRecoveryStore.load()
+        conflicts = []
+        for snapshot in loaded.snapshots:
+            item = None
+            if snapshot.filename and os.path.isfile(snapshot.filename):
+                item = pyzo.editors.loadFile(snapshot.filename, ignoreFail=True)
+            if item is None:
+                item = pyzo.editors.newFile()
+                if snapshot.filename:
+                    item.editor._filename = snapshot.filename
+                    item.editor._name = os.path.basename(snapshot.filename)
+                else:
+                    item.editor._name = snapshot.display_name
+
+            editor = item.editor
+            current_signature = self._peerFileSignature(snapshot.filename)
+            conflict = bool(
+                snapshot.filename
+                and (
+                    current_signature == "missing"
+                    or current_signature != snapshot.disk_signature
+                )
+            )
+            editor.setPlainText(snapshot.text)
+            editor.lineEndings = snapshot.line_endings
+            editor.useBom = snapshot.use_bom
+            editor._peerRecoveryId = snapshot.document_id
+            editor._peerRecoveryDiskSignature = snapshot.disk_signature
+            editor._peerRecoveryEncoding = snapshot.encoding
+            editor._peerRecoveryConflict = conflict
+            if snapshot.filename and os.path.isfile(snapshot.filename):
+                editor._modifyTime = os.path.getmtime(snapshot.filename)
+            editor.document().setModified(True)
+            host = pyzo.editors._group_for_editor(editor)
+            self._updateEditorDockTitle(host)
+            if conflict:
+                conflicts.append(snapshot.display_name)
+
+        messages = []
+        if conflicts:
+            messages.append(
+                translate(
+                    "main",
+                    "Recovered dirty buffers conflict with files on disk: {names}",
+                ).format(names=", ".join(conflicts))
+            )
+        if loaded.issues:
+            messages.append(
+                translate(
+                    "main",
+                    "Some recovery records were quarantined: {count}",
+                ).format(count=len(loaded.issues))
+            )
+            for issue in loaded.issues:
+                print(
+                    f"recovery record quarantined ({issue.source}): {issue.detail}",
+                    file=sys.stderr,
+                )
+        if messages:
+            self.statusBar().showMessage(" ".join(messages))
+
+    def _testPeerRestoredRecovery(self):
+        expected = os.environ["PYZO_EXPECT_RECOVERY_TEXT"]
+        matches = [
+            editor
+            for editor in pyzo.editors
+            if editor.toPlainText() == expected
+        ]
+        assert len(matches) == 1
+        editor = matches[0]
+        assert editor.document().isModified()
+        assert getattr(editor, "_peerRecoveryId", None)
+        assert getattr(editor, "_peerRecoveryEncoding", None)
+        assert editor.lineEndingsHumanReadable == "CRLF"
+        assert editor.useBom
+        expected_conflict = os.environ.get("PYZO_EXPECT_RECOVERY_CONFLICT") == "1"
+        assert bool(getattr(editor, "_peerRecoveryConflict", False)) is expected_conflict
+        host = pyzo.editors._group_for_editor(editor)
+        title = self._editorHosts[host].windowTitle()
+        assert ("⚠" in title) is expected_conflict
+        self._retirePeerRecoveryForEditor(editor, destructive_fallback=True)
+        editor.document().setModified(False)
+        assert pyzo.editors.closeFile(editor) == 1
+        print("Pyzo retained dirty-buffer restoration smoke test passed")
+
+    def _retainPeerDocuments(self, documents):
+        return self._peerRecoveryRetention.retain(
+            tuple(lifecycle for _document_id, lifecycle in documents)
+        )
+
+    def _choosePeerRecoveryFailure(self, lifecycles, error):
+        names = [lifecycle.recovery_snapshot().display_name for lifecycle in lifecycles]
+        dialog = QtWidgets.QMessageBox(None)
+        dialog.setWindowTitle(translate("main", "Could not retain dirty buffers"))
+        dialog.setIcon(QtWidgets.QMessageBox.Icon.Critical)
+        dialog.setText(
+            translate(
+                "main",
+                "Pyzo could not write recovery snapshots for:\n{names}",
+            ).format(names="\n".join(names))
+        )
+        dialog.setInformativeText(str(error))
+        retry = dialog.addButton(
+            translate("main", "Retry"), QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        save = dialog.addButton(
+            translate("main", "Save affected"),
+            QtWidgets.QMessageBox.ButtonRole.ActionRole,
+        )
+        discard = dialog.addButton(
+            translate("main", "Discard affected and exit"),
+            QtWidgets.QMessageBox.ButtonRole.DestructiveRole,
+        )
+        dialog.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(retry)
+        dialog.exec()
+        if dialog.clickedButton() is retry:
+            return "retry"
+        if dialog.clickedButton() is save:
+            return "save"
+        if dialog.clickedButton() is discard:
+            return "discard"
+        return "cancel"
+
+    def _retirePeerRecoveryForEditor(
+        self, editor, *, destructive_fallback=False
+    ):
+        recovery_id = getattr(editor, "_peerRecoveryId", None)
+        if recovery_id is None:
+            return
+        try:
+            self._peerRecoveryStore.retire(recovery_id)
+        except self._RecoveryWriteError:
+            if not destructive_fallback:
+                raise
+            self._peerRecoveryStore.invalidate(recovery_id)
+        editor._peerRecoveryConflict = False
+        editor._peerRecoveryDiskSignature = None
+        editor._peerRecoveryEncoding = None
+        editor._peerRecoveryId = None
+        host = pyzo.editors._group_for_editor(editor)
+        if host is not None:
+            self._updateEditorDockTitle(host)
 
     def _cleanupRemainingPeerTools(self):
         errors = []
