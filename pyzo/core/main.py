@@ -1965,8 +1965,68 @@ class MainWindow(QtWidgets.QMainWindow):
             assert editor.breakPoints() == []
             assert pyzo.editors.closeFile(editor) == 1
             os.remove(state["path"])
-            state["phase"] = "complete"
             print("Pyzo ordinary run and live-debug smoke test passed")
+
+            fd, path = tempfile.mkstemp(
+                prefix="pyzo-peer-postmortem-", suffix=".py"
+            )
+            source = (
+                "def peer_postmortem_outer():\n"
+                "    peer_outer_value = 21\n"
+                "    def peer_postmortem_inner():\n"
+                "        peer_captured_value = 84\n"
+                "        raise RuntimeError('peer-postmortem')\n"
+                "    peer_postmortem_inner()\n"
+                "peer_postmortem_outer()\n"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(source)
+            item = pyzo.editors.loadFile(path, ignoreFail=True)
+            assert item is not None
+            editor = item.editor
+            self._activatePeerPaneForWidget(editor)
+            self.menuBar()._menumap["run"]._runFile((False, False), editor)
+            state.update(phase="wait-exception", path=path, editor=editor)
+            return False
+
+        if phase == "wait-exception":
+            if (shell._debugState or {}).get("debugmode", 0) != 0:
+                return False
+            last_exception = shell._request.eval(
+                "repr(__import__('sys').last_value)"
+            ).result_or_cancel(0.2)
+            if last_exception != "RuntimeError('peer-postmortem')":
+                return False
+            shell.executeCommand("DB START\n")
+            state["phase"] = "wait-postmortem"
+            return False
+
+        if phase == "wait-postmortem":
+            debug_state = shell._debugState or {}
+            if debug_state.get("debugmode") != 1:
+                return False
+            frames = debug_state["frames"]
+            index = debug_state["index"]
+            assert frames[index - 1][0] == state["path"]
+            assert frames[index - 1][1] == 5
+            editor = state["editor"]
+            assert pyzo.editors.getCurrentEditor() is editor
+            assert editor._debugLineIndicator == 5
+            captured = shell._request.eval(
+                "peer_captured_value"
+            ).result_or_cancel(0.2)
+            assert captured == 84
+            shell.executeCommand("DB STOP\n")
+            state["phase"] = "wait-postmortem-stop"
+            return False
+
+        if phase == "wait-postmortem-stop":
+            if (shell._debugState or {}).get("debugmode", 0) != 0:
+                return False
+            assert pyzo.editors.closeFile(state["editor"]) == 1
+            os.remove(state["path"])
+            state["phase"] = "complete"
+            print("Pyzo post-mortem re-entry smoke test passed")
             return True
 
         return phase == "complete"

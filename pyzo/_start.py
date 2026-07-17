@@ -329,7 +329,7 @@ def start():
                     return
             if time.time() - startTime > 5.0:
                 timer.stop()
-                if getattr(pyzo.main, "_peerFrameMode", False) and not getattr(
+                if getattr(pyzo.main, "_peerFrameMode", False) and getattr(
                     pyzo.main, "_peerRunDebugSmoke", {}
                 ).get("phase") != "complete":
                     print(
