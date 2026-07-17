@@ -1985,8 +1985,23 @@ class MainWindow(QtWidgets.QMainWindow):
             assert item is not None
             editor = item.editor
             self._activatePeerPaneForWidget(editor)
+            editor_host = pyzo.editors._group_for_editor(editor)
+            editor_dock = self._editorHosts[editor_host]
+            editor_id = self._peerBackend._pane_id_from_dock(editor_dock)
+            source_frame_id = "pyzo-postmortem-source-frame"
+            result = self._peerWorkspace.float(editor_id, source_frame_id)
+            assert result.applied, result.detail
+            QtWidgets.QApplication.processEvents()
+            assert editor_dock in self._peerBackend.frame_windows[
+                source_frame_id
+            ].dockWidgets()
             self.menuBar()._menumap["run"]._runFile((False, False), editor)
-            state.update(phase="wait-exception", path=path, editor=editor)
+            state.update(
+                phase="wait-exception",
+                path=path,
+                editor=editor,
+                source_frame_id=source_frame_id,
+            )
             return False
 
         if phase == "wait-exception":
@@ -2012,10 +2027,38 @@ class MainWindow(QtWidgets.QMainWindow):
             editor = state["editor"]
             assert pyzo.editors.getCurrentEditor() is editor
             assert editor._debugLineIndicator == 5
+            editor_host = pyzo.editors._group_for_editor(editor)
+            editor_dock = self._editorHosts[editor_host]
+            assert editor_dock in self._peerBackend.frame_windows[
+                state["source_frame_id"]
+            ].dockWidgets()
             captured = shell._request.eval(
                 "peer_captured_value"
             ).result_or_cancel(0.2)
             assert captured == 84
+            outer_index = next(
+                i
+                for i, frame in enumerate(frames, 1)
+                if frame[2] == "peer_postmortem_outer"
+            )
+            shell.executeCommand(f"DB FRAME {outer_index}\n")
+            state.update(phase="wait-postmortem-outer", outer_index=outer_index)
+            return False
+
+        if phase == "wait-postmortem-outer":
+            debug_state = shell._debugState or {}
+            if debug_state.get("index") != state["outer_index"]:
+                return False
+            frame = debug_state["frames"][state["outer_index"] - 1]
+            assert frame == (state["path"], 6, "peer_postmortem_outer")
+            editor = state["editor"]
+            assert pyzo.editors.getCurrentEditor() is editor
+            assert editor._debugLineIndicator == 6
+            editor_host = pyzo.editors._group_for_editor(editor)
+            editor_dock = self._editorHosts[editor_host]
+            assert editor_dock in self._peerBackend.frame_windows[
+                state["source_frame_id"]
+            ].dockWidgets()
             shell.executeCommand("DB STOP\n")
             state["phase"] = "wait-postmortem-stop"
             return False
