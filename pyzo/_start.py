@@ -316,8 +316,28 @@ def start():
         def testrunTimerCallback(*args):
             dt = time.time() - startTime
             print("*** testrunTimerCallback:", dt, "s ***")
+            if getattr(pyzo.main, "_peerFrameMode", False):
+                try:
+                    pyzo.main._testPeerRunAndLiveDebugTick()
+                except Exception:
+                    pyzo.main._peerRunDebugSmokeError = traceback.format_exc()
+                    print(pyzo.main._peerRunDebugSmokeError, file=sys.stderr)
+                error = getattr(pyzo.main, "_peerRunDebugSmokeError", None)
+                if error:
+                    timer.stop()
+                    QtWidgets.qApp.exit(1)
+                    return
             if time.time() - startTime > 5.0:
                 timer.stop()
+                if getattr(pyzo.main, "_peerFrameMode", False) and not getattr(
+                    pyzo.main, "_peerRunDebugSmoke", {}
+                ).get("phase") != "complete":
+                    print(
+                        "Peer run/debug smoke did not complete within 5 seconds",
+                        file=sys.stderr,
+                    )
+                    QtWidgets.qApp.exit(1)
+                    return
                 msg = "Stopping after {} s".format(dt)
                 print(msg)
                 if os.getenv("PYZO_LOG", ""):

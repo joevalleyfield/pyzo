@@ -1883,6 +1883,94 @@ class MainWindow(QtWidgets.QMainWindow):
         if shell is not None and dock is not None:
             dock.setWindowTitle(shellTitle(shell))
 
+    def _testPeerRunAndLiveDebugTick(self):
+        """Advance the real-kernel run/debug smoke without blocking Qt."""
+        state = getattr(self, "_peerRunDebugSmoke", None)
+        if state is None:
+            state = self._peerRunDebugSmoke = {"phase": "wait-shell"}
+
+        shell = pyzo.shells.getCurrentShell()
+        if shell is None or not shell._version:
+            return False
+
+        phase = state["phase"]
+        if phase == "wait-shell":
+            fd, path = tempfile.mkstemp(prefix="pyzo-peer-debug-", suffix=".py")
+            source = (
+                "peer_run_value = 6 * 7\n"
+                "\n"
+                "def peer_live_debug_probe():\n"
+                "    peer_frame_value = 41\n"
+                "    peer_frame_value += 1\n"
+                "    return peer_frame_value\n"
+                "\n"
+                "peer_live_debug_result = peer_live_debug_probe()\n"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(source)
+            item = pyzo.editors.loadFile(path, ignoreFail=True)
+            assert item is not None
+            editor = item.editor
+            self._activatePeerPaneForWidget(editor)
+            assert pyzo.editors.getCurrentEditor() is editor
+            self.menuBar()._menumap["run"]._runFile((False, False), editor)
+            state.update(
+                phase="wait-run",
+                shell=shell,
+                path=path,
+                editor=editor,
+            )
+            return False
+
+        assert shell is state["shell"]
+        editor = state["editor"]
+        if phase == "wait-run":
+            value = shell._request.eval("peer_run_value").result_or_cancel(0.2)
+            if value != 42:
+                return False
+            editor.toggleBreakpoint(5, triState=False)
+            assert editor.breakPoints() == [5]
+            self.menuBar()._menumap["run"]._runFile((False, False), editor)
+            state["phase"] = "wait-debug"
+            return False
+
+        if phase == "wait-debug":
+            debug_state = shell._debugState or {}
+            if debug_state.get("debugmode") != 2:
+                return False
+            frames = debug_state["frames"]
+            index = debug_state["index"]
+            assert frames[index - 1][0] == state["path"]
+            assert frames[index - 1][1] == 5
+            assert pyzo.editors.getCurrentEditor() is editor
+            assert editor._debugLineIndicator == 5
+            host = next(host for host in pyzo.shells.hosts if shell in host.getShells())
+            assert host._dbs._lastFrames == frames
+            assert host._dbs._lastIndex == index
+            value = shell._request.eval("peer_frame_value").result_or_cancel(0.2)
+            assert value == 41
+            shell.executeCommand("DB CONTINUE\n")
+            state["phase"] = "wait-continue"
+            return False
+
+        if phase == "wait-continue":
+            if (shell._debugState or {}).get("debugmode", 0) != 0:
+                return False
+            value = shell._request.eval("peer_live_debug_result").result_or_cancel(
+                0.2
+            )
+            if value != 42:
+                return False
+            editor.toggleBreakpoint(5, triState=False)
+            assert editor.breakPoints() == []
+            assert pyzo.editors.closeFile(editor) == 1
+            os.remove(state["path"])
+            state["phase"] = "complete"
+            print("Pyzo ordinary run and live-debug smoke test passed")
+            return True
+
+        return phase == "complete"
+
     def _testIndependentShellDocks(self):
         """Exercise shell ownership after the deferred default shell exists."""
         first_shell = pyzo.shells.getCurrentShell()
