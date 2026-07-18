@@ -70,12 +70,20 @@ class ViewManager:
 
         if viewData:
             if viewName == self.NORMAL_VIEW_NAME:
-                viewData = {
-                    "name": viewName,
-                    "loadedTools": pyzo.config.state.loadedTools,
-                    "windowGeometry": pyzo.config.state.windowGeometry,
-                    "windowState": pyzo.config.state.windowState,
-                }
+                if pyzo.workspaceSession is not None:
+                    viewData = {
+                        "name": viewName,
+                        "workspaceSession": pyzo.config.state.get(
+                            "peerWorkspaceSession", {}
+                        ),
+                    }
+                else:
+                    viewData = {
+                        "name": viewName,
+                        "loadedTools": pyzo.config.state.loadedTools,
+                        "windowGeometry": pyzo.config.state.windowGeometry,
+                        "windowState": pyzo.config.state.windowState,
+                    }
             return viewData
 
         raise KeyError("view not found: {}".format(repr(viewName)))
@@ -92,6 +100,9 @@ class ViewManager:
         pyzo.config.state.views.sort(key=lambda v: v["name"] != viewName)
 
     def selectView(self, viewName):
+        if pyzo.workspaceSession is not None:
+            return self._selectPeerView(viewName)
+
         if self.isNormalViewActive() and viewName != self.NORMAL_VIEW_NAME:
             pyzo.main.saveWindowState()
 
@@ -121,7 +132,36 @@ class ViewManager:
         self._currentViewName = viewName
         self._bringViewNameToTopOfHistory()
 
+    def _selectPeerView(self, viewName):
+        if self.isNormalViewActive() and viewName != self.NORMAL_VIEW_NAME:
+            pyzo.config.state.peerWorkspaceSession = pyzo.workspaceSession.capture()
+        if self._currentViewName != viewName:
+            viewData = self._getViewData(viewName)
+            snapshot = viewData.get("workspaceSession")
+            if not snapshot:
+                print(
+                    "Cannot apply legacy named view in peer mode; "
+                    "save it again to create a workspace snapshot."
+                )
+                return False
+            result = pyzo.workspaceSession.restore(snapshot)
+            if not result.applied:
+                print("Could not apply peer named view: " + result.detail)
+                return False
+        self._currentViewName = viewName
+        self._bringViewNameToTopOfHistory()
+        return True
+
     def saveView(self, viewName):
+        if pyzo.workspaceSession is not None:
+            snapshot = pyzo.workspaceSession.capture()
+            if viewName == self.NORMAL_VIEW_NAME:
+                pyzo.config.state.peerWorkspaceSession = snapshot
+            else:
+                viewData = self._getViewData(viewName, createIfNotFound=True)
+                viewData["workspaceSession"] = snapshot
+            return
+
         if viewName == self.NORMAL_VIEW_NAME:
             pyzo.main.saveWindowState()
         else:

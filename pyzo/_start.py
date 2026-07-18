@@ -210,9 +210,15 @@ def saveConfig():
     if pyzo.editors:
         pyzo.editors.saveEditorState()
 
-    # Let the main window save its state
-    if pyzo.main and pyzo.viewManager.isNormalViewActive():
-        pyzo.main.saveWindowState()
+    # Save either the application-owned peer session or the legacy window.
+    if pyzo.viewManager.isNormalViewActive():
+        if pyzo.workspaceSession is not None:
+            if "--test" not in sys.argv:
+                pyzo.config.state.peerWorkspaceSession = (
+                    pyzo.workspaceSession.capture()
+                )
+        elif pyzo.main:
+            pyzo.main.saveWindowState()
 
     # Store config
     if pyzo._saveConfigFile:
@@ -396,6 +402,7 @@ pyzo.shellCommands = None  # Application-owned shell command behavior
 pyzo.shellCommandProjector = None  # Menu/toolbar action projections
 pyzo.runCommands = None  # Application-owned editor execution behavior
 pyzo.menuProjector = None  # Complete application menus projected into peer chrome
+pyzo.workspaceSession = None  # Application-owned peer workspace persistence
 
 # Get directories of interest
 pyzo.appDataDir, pyzo.appConfigDir = paths.prepare_appdata_appconfig_dirs()

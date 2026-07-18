@@ -17,6 +17,7 @@ state = dict:
     loadedTools = []
     windowState = ''  # Of window and tools
     windowGeometry = ''  # Position and size of window, whether maximized, etc.
+    peerWorkspaceSession = dict:  # Peer topology, active pane, tools, frame geometry
     newUser = 1  # So we can guide new users a bit
     views = []
 

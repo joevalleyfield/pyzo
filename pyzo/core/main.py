@@ -582,7 +582,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Restore window geometry before drawing for the first time,
         # such that the window is in the right place
         self.resize(800, 600)  # default size
-        self.restoreGeometry()
+        if not self._peerFrameMode:
+            self.restoreGeometry()
 
         # Show splash screen (we need to set our color too)
         w = SplashWidget(self, distro="no distro")
@@ -657,13 +658,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setStyleSheet("")
         self.setUpdatesEnabled(True)
 
-        # Restore window state, force updating, and restore again
-        self.restoreState()
-        self.paintNow()
-        self.restoreState()
         if self._peerFrameMode:
-            self._restoreLegacyEditorStateIntoPeerPanes()
+            if "--test" not in sys.argv:
+                self._restoreLegacyEditorStateIntoPeerPanes()
         else:
+            # Restoring QMainWindow state twice is a legacy Qt workaround.
+            self.restoreState()
+            self.paintNow()
+            self.restoreState()
             pyzo.editors.restoreEditorState()
 
         # Instantiate view manager
@@ -793,6 +795,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 new_untitled_document_id,
             )
             from spikes.peer_frames.status import StatusState
+            from spikes.peer_frames.workspace_session import WorkspaceSessionService
 
             self._PeerDirection = Direction
             self._PeerCloseDecision = CloseDecision
@@ -987,8 +990,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 ),
             )
             pyzo.application = self._peerApplicationController
+            pyzo.workspaceSession = WorkspaceSessionService(
+                self._peerWorkspace,
+                lambda: self._peerBackend.frame_windows,
+                pyzo.toolManager.getLoadedTools,
+                self.restoreTools,
+            )
         else:
             pyzo.application = None
+            pyzo.workspaceSession = None
             self.setStatusBar(StatusBar())
         self.statusBar().setVisible(pyzo.config.view.showStatusbar)
 
@@ -1146,7 +1156,17 @@ class MainWindow(QtWidgets.QMainWindow):
         elif pyzo.config.state.loadedTools:
             self.restoreTools()
         if self._peerFrameMode:
+            if "--test" not in sys.argv:
+                callLater(self._restorePeerWorkspaceSession)
             self._installPeerApplicationLifecycle()
+
+    def _restorePeerWorkspaceSession(self):
+        snapshot = pyzo.config.state.get("peerWorkspaceSession", None)
+        if not snapshot:
+            return
+        result = pyzo.workspaceSession.restore(snapshot)
+        if not result.applied:
+            print("Could not restore peer workspace session: " + result.detail)
 
     def _onFocusedDockWidgetChanged(self, dock_widget):
         # Focus selects command/service context. It does not bind an editor to
@@ -2418,6 +2438,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         print("Pyzo shell toolbar action enablement smoke test passed")
         if self._peerFrameMode:
+            self._testPeerWorkspaceSession(second_shell)
             editor_group = pyzo.editors.activeGroup
             editor_dock = self._editorHosts[editor_group]
             second_host = next(
@@ -2440,6 +2461,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._onFocusedDockWidgetChanged(first_shell_dock)
             assert pyzo.shells.getCurrentShell() is first_shell
             assert pyzo.editors.activeGroup is editor_group
+
             assert self._peerWorkspace.resolve_active_context().pane.kind is (
                 self._PeerPaneKind.SHELL
             )
@@ -2478,6 +2500,38 @@ class MainWindow(QtWidgets.QMainWindow):
         print("Pyzo independent shell-dock smoke test passed")
         if self._peerFrameMode and sys.platform == "darwin":
             self._testPeerZeroFrameLifecycle()
+
+    def _testPeerWorkspaceSession(self, shell):
+        editors_before = tuple(pyzo.editors)
+        snapshot = pyzo.workspaceSession.capture()
+        before_layout = snapshot["layout"]
+        shell_host = next(
+            host for host in pyzo.shells.hosts if shell in host.getShells()
+        )
+        shell_id = self._peerBackend._pane_id_from_dock(
+            self._shellHosts[shell_host]
+        )
+        editor_host = pyzo.editors.activeGroup
+        editor_id = self._peerBackend._pane_id_from_dock(
+            self._editorHosts[editor_host]
+        )
+
+        result = self._peerWorkspace.tab(shell_id, editor_id)
+        assert result.applied, result.detail
+        assert self._peerWorkspace.serialize_layout() != before_layout
+        result = pyzo.workspaceSession.restore(snapshot)
+        assert result.applied, result.detail
+        QtWidgets.QApplication.processEvents()
+        assert pyzo.workspaceSession.capture() == snapshot
+        assert tuple(pyzo.editors) == editors_before
+
+        invalid = dict(snapshot)
+        invalid["schema"] = 999
+        before_invalid = pyzo.workspaceSession.capture()
+        result = pyzo.workspaceSession.restore(invalid)
+        assert not result.applied
+        assert pyzo.workspaceSession.capture() == before_invalid
+        print("Pyzo peer workspace-session round-trip smoke test passed")
 
     def _testPeerZeroFrameLifecycle(self):
         assert self._peerWorkspace.frames
@@ -2528,6 +2582,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _testPeerPaneMovementMatrix(self, shell_host, shell):
         """Move real Pyzo surfaces while preserving application identity."""
 
+        editors_before = tuple(pyzo.editors)
+        assert len(editors_before) == 2, len(editors_before)
         editor_group = pyzo.editors.activeGroup
         editor = editor_group.getCurrentEditor()
         editor_document = editor.document()
@@ -2539,6 +2595,7 @@ class MainWindow(QtWidgets.QMainWindow):
         debugger_actions = tuple(shell_host._debugActions)
 
         pyzo.toolManager.loadTool("pyzofilebrowser")
+        assert tuple(pyzo.editors) == editors_before
         tool_dock = pyzo.toolManager._activeTools["pyzofilebrowser"]
         tool_widget = tool_dock.widget()
 
@@ -2569,6 +2626,7 @@ class MainWindow(QtWidgets.QMainWindow):
             assert self._peerDocumentViews.document_id_for_view(editor_id) == document_id
             assert shell_id in self._peerShellLifecycles.pane_ids
             assert self._dockManager.dockAreaCount() == 0
+            assert tuple(pyzo.editors) == editors_before
 
         apply(
             lambda: self._peerWorkspace.split(
@@ -2622,6 +2680,7 @@ class MainWindow(QtWidgets.QMainWindow):
         assert self._peerStatusProjector.projected_window_ids == peer_window_ids
         assert self._peerCommandProjector.projected_window_ids == peer_window_ids
         pyzo.toolManager.closeTool("pyzofilebrowser")
+        assert tuple(pyzo.editors) == editors_before
         print("Pyzo real-pane movement matrix smoke test passed")
         self._testCleanPeerEditorLifecycle()
 
@@ -3461,6 +3520,7 @@ class _CallbackEventHandler(QtCore.QObject):
                 callback(*args)
             except Exception as why:
                 print("callback failed: {}:\n{}".format(callback, why))
+                traceback.print_exc()
 
     def postEventWithCallback(self, callback, *args):
         self.queue.put((callback, args))
