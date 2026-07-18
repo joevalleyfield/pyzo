@@ -849,7 +849,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 CommandDescriptor(
                     "application.quit",
                     translate("menu", "Quit Pyzo"),
-                    lambda _context: pyzo.main.quit(),
+                    lambda _context: pyzo.application.lifecycle.quit(),
                     shortcuts=("Ctrl+Q",),
                 )
             )
@@ -857,7 +857,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 CommandDescriptor(
                     "application.restart",
                     translate("menu", "Restart Pyzo"),
-                    lambda _context: pyzo.main.restart(),
+                    lambda _context: pyzo.application.lifecycle.restart(),
                 )
             )
             pyzo.commands.register(
@@ -871,11 +871,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     checkable=True,
                 )
             )
-            self._peerCommandProjector = QtAdsCommandProjector(
-                pyzo.commands,
-                self._dockManager,
-                (VIEW_STATUS_COMMAND, "application.restart", "application.quit"),
-            )
+            self._peerCommandProjector = None
         else:
             # The previous main-window integration remains as a control. Its
             # custom ordering and guide code is deliberately absent from the
@@ -1000,7 +996,22 @@ class MainWindow(QtWidgets.QMainWindow):
         from pyzo.core import menu
 
         pyzo.keyMapper = menu.KeyMapper()
-        menu.buildMenus(self.menuBar())
+        if self._peerFrameMode:
+            file_title = str(translate("menu", "File"))
+            view_title = str(translate("menu", "View"))
+            self._peerCommandProjector = QtAdsCommandProjector(
+                pyzo.commands,
+                self._dockManager,
+                (VIEW_STATUS_COMMAND, "application.restart", "application.quit"),
+                menu_title=file_title,
+                menu_bar_builder=menu.buildMenus,
+                command_menu_titles={VIEW_STATUS_COMMAND: view_title},
+            )
+            pyzo.menuProjector = self._peerCommandProjector
+            assert not self.menuBar().actions()
+        else:
+            menu.buildMenus(self.menuBar())
+            pyzo.menuProjector = None
         self._menusReady = True
 
         # Add context menus now that their actions have been constructed.
@@ -2263,8 +2274,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
             pyzo.shells.setExecutionShell(second_shell)
             assert pyzo.shells.getExecutionShell() is second_shell
-            shell_menu = self.menuBar()._menumap["shell"]
-            run_menu = self.menuBar()._menumap["run"]
+            peer_menu_bar = self._peerCommandProjector.primary_menu_bar()
+            shell_menu = peer_menu_bar._menumap["shell"]
+            run_menu = peer_menu_bar._menumap["run"]
             shell_menu._updateExecutionTarget()
             run_menu._updateExecutionTarget()
             assert "Run/Debug target:" in shell_menu._executionTargetAction.text()
@@ -2383,7 +2395,12 @@ class MainWindow(QtWidgets.QMainWindow):
         assert len(pyzo.shells.hosts) == 2
         assert all(len(host.getShells()) == 1 for host in pyzo.shells.hosts)
         assert pyzo.shells.getCurrentShell() is second_shell
-        shell_menu = self.menuBar()._menumap["shell"]
+        menu_bar = (
+            self._peerCommandProjector.primary_menu_bar()
+            if self._peerFrameMode
+            else self.menuBar()
+        )
+        shell_menu = menu_bar._menumap["shell"]
         assert shell_menu._shellActions
         assert all(action.isEnabled() for action in shell_menu._shellActions)
         assert all(
@@ -2906,6 +2923,24 @@ class MainWindow(QtWidgets.QMainWindow):
         assert pyzo.commands.descriptors[1].id == "application.restart"
         assert self._peerCommandProjector.native_menus == (sys.platform == "darwin")
         peer_windows = tuple(self._peerBackend.frame_windows.values())
+        expected_menu_titles = [
+            str(translate("menu", title))
+            for title in (
+                "File",
+                "Edit",
+                "View",
+                "Settings",
+                "Shell",
+                "Run",
+                "Tools",
+                "Help",
+            )
+        ]
+        assert [
+            action.text().replace("&", "")
+            for action in self._peerCommandProjector.primary_menu_bar().actions()
+        ] == expected_menu_titles
+        assert not self.menuBar().actions()
         status_was_visible = self.statusBar().isVisible()
         self.statusBar().setVisible(True)
         self.statusBar().showMessage("Peer status smoke")
@@ -2953,22 +2988,24 @@ class MainWindow(QtWidgets.QMainWindow):
             for action in peer_quit_actions
         )
         quit_action = peer_quit_actions[0]
-        original_quit = pyzo.main.quit
+        original_quit = pyzo.application.lifecycle.quit
         quit_calls = []
         try:
-            pyzo.main.quit = lambda: quit_calls.append(True) or False
+            pyzo.application.lifecycle.quit = lambda: quit_calls.append(True) or False
             quit_action.trigger()
         finally:
-            pyzo.main.quit = original_quit
+            pyzo.application.lifecycle.quit = original_quit
         assert quit_calls == [True]
         restart_action = peer_restart_actions[0]
-        original_restart = pyzo.main.restart
+        original_restart = pyzo.application.lifecycle.restart
         restart_calls = []
         try:
-            pyzo.main.restart = lambda: restart_calls.append(True) or False
+            pyzo.application.lifecycle.restart = (
+                lambda: restart_calls.append(True) or False
+            )
             restart_action.trigger()
         finally:
-            pyzo.main.restart = original_restart
+            pyzo.application.lifecycle.restart = original_restart
         assert restart_calls == [True]
 
         container_overlay = self._dockManager.containerOverlay()

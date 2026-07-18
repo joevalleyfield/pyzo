@@ -549,18 +549,20 @@ class FileMenu(Menu):
             self.addMenu(self._lineEndingMenu, icons.page_white_gear),
         ]
 
-        # Closing of app
-        self.addSeparator()
-        self.addItem(
-            translate("menu", "Restart Pyzo ::: Restart the application."),
-            icons.arrow_rotate_clockwise,
-            pyzo.main.restart,
-        )
-        self.addItem(
-            translate("menu", "Quit Pyzo ::: Close the application."),
-            icons.cancel,
-            pyzo.main.quit,
-        )
+        # Peer menu bars receive lifecycle commands from the application
+        # registry. The legacy menu keeps its original actions.
+        if not self.parent().property("applicationCommandProjection"):
+            self.addSeparator()
+            self.addItem(
+                translate("menu", "Restart Pyzo ::: Restart the application."),
+                icons.arrow_rotate_clockwise,
+                pyzo.main.restart,
+            )
+            self.addItem(
+                translate("menu", "Quit Pyzo ::: Close the application."),
+                icons.cancel,
+                pyzo.main.quit,
+            )
 
         # Start disabled
         self.setEnabled(False)
@@ -972,13 +974,14 @@ class ViewMenu(Menu):
             None,
             "showIndentationGuides",
         )
-        self.addCheckItem(
-            translate("menu", "Show status bar ::: Show status bar."),
-            None,
-            self._setStatusBar,
-            None,
-            pyzo.config.view.showStatusbar,
-        )
+        if not self.parent().property("applicationCommandProjection"):
+            self.addCheckItem(
+                translate("menu", "Show status bar ::: Show status bar."),
+                None,
+                self._setStatusBar,
+                None,
+                pyzo.config.view.showStatusbar,
+            )
         self.addSeparator()
         self.addEditorItem(
             translate(
@@ -1082,7 +1085,12 @@ class ViewMenu(Menu):
             editor.setFocus()
 
     def _viewManager(self):
-        d = pyzo.core.views.ViewManagerDialog(pyzo.main)
+        parent = (
+            pyzo.application.active_peer.window()
+            if pyzo.application is not None
+            else pyzo.main
+        )
+        d = pyzo.core.views.ViewManagerDialog(parent)
         d.exec()
 
     def _setEdgeColumn(self, value):
@@ -1092,12 +1100,18 @@ class ViewMenu(Menu):
 
     def _setQtTheme(self, value):
         pyzo.config.view.qtstyle = value
-        pyzo.main.setQtStyle(value)
+        if pyzo.application is not None:
+            pyzo.application.appearance.set_style(value)
+        else:
+            pyzo.main.setQtStyle(value)
 
     def _setStatusBar(self, value):
         """Show or hide status bar."""
         pyzo.config.view.showStatusbar = value
-        pyzo.main.statusBar().setVisible(value)
+        if pyzo.application is not None:
+            pyzo.application.status.service.setVisible(value)
+        else:
+            pyzo.main.statusBar().setVisible(value)
 
     def _previousCell(self):
         """Rewind the cursor to the previous cell (starting with '##')."""
@@ -1298,8 +1312,6 @@ class ShellMenu(Menu):
         """Remove, then add the items for the creation of each shell"""
         for action in self._shellCreateActions:
             self.removeAction(action)
-            # actions with key sequence were added in pyzo.main too
-            pyzo.main.removeAction(action)
 
         self._shellCreateActions = []
         for i, config in enumerate(pyzo.config.shellConfigs2):
@@ -2784,7 +2796,12 @@ class KeymappingDialog(QtWidgets.QDialog):
         # fill tab
         self._models = []
         self._trees = []
-        for menu in pyzo.main.menuBar()._menus:
+        menu_bar = (
+            pyzo.menuProjector.primary_menu_bar()
+            if pyzo.menuProjector is not None
+            else pyzo.main.menuBar()
+        )
+        for menu in menu_bar._menus:
             # create treeview and model
             model = KeyMapModel()
             model.setRootMenu(menu)
@@ -3024,7 +3041,10 @@ class AdvancedSettings(QtWidgets.QDialog):
         """Reset a IDE to its original settings."""
         pyzo.saveConfig()
         pyzo.resetConfig()
-        pyzo.main.restart()
+        if pyzo.application is not None:
+            pyzo.application.lifecycle.restart()
+        else:
+            pyzo.main.restart()
 
     def btnBackupClicked(self):
         """Make backup file of the current settings."""
@@ -3035,7 +3055,10 @@ class AdvancedSettings(QtWidgets.QDialog):
         """Restore settings from last backup file, then restart Pyzo."""
         pyzo.resetConfig()
         shutil.copyfile(self.backup_file, self.conf_file)
-        pyzo.main.restart()
+        if pyzo.application is not None:
+            pyzo.application.lifecycle.restart()
+        else:
+            pyzo.main.restart()
 
     def currentItemChanged(self, item, column):
         """Save new settings."""

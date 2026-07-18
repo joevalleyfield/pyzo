@@ -395,6 +395,7 @@ pyzo.commands = None  # Application-owned commands (peer-frame mode for now)
 pyzo.shellCommands = None  # Application-owned shell command behavior
 pyzo.shellCommandProjector = None  # Menu/toolbar action projections
 pyzo.runCommands = None  # Application-owned editor execution behavior
+pyzo.menuProjector = None  # Complete application menus projected into peer chrome
 
 # Get directories of interest
 pyzo.appDataDir, pyzo.appConfigDir = paths.prepare_appdata_appconfig_dirs()
