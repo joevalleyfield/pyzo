@@ -1321,112 +1321,26 @@ class ShellMenu(Menu):
 
     def onCurrentShellChanged(self):
         """Enable/disable shell actions based on wether a shell is available"""
-        for shellAction in self._shellActions:
-            shellAction.setEnabled(bool(pyzo.shells.getCurrentShell()))
+        pyzo.shellCommandProjector.refresh()
 
     def buildShellActions(self):
         """Create the menu items which are also available in the
         ShellTabContextMenu
 
         Returns a list of all items added"""
-        icons = pyzo.icons
         return [
-            self.addItem(
-                translate("menu", "Clear screen ::: Clear the screen."),
-                icons.application_eraser,
-                self._shellAction,
-                "clearScreen",
-            ),
-            self.addItem(
-                translate(
-                    "menu",
-                    "Interrupt ::: Interrupt the current running code (does not work for extension code).",
-                ),
-                icons.application_lightning,
-                self._shellAction,
-                "interrupt",
-            ),
-            self.addItem(
-                translate(
-                    "menu",
-                    "Pause ::: Pause the current running code.",
-                ),
-                icons.application_pause,
-                self._shellAction,
-                "pause",
-            ),
-            self.addItem(
-                translate("menu", "Restart ::: Terminate and restart the interpreter."),
-                icons.application_refresh,
-                self._shellAction,
-                "restart",
-            ),
-            # self.addItem(
-            #     translate(
-            #         "menu",
-            #         "Terminate ::: Terminate the interpreter, leaving the shell open.",
-            #     ),
-            #     icons.application_delete,
-            #     self._shellAction,
-            #     "terminate",
-            # ),
-            self.addItem(
-                translate(
-                    "menu", "Close ::: Terminate the interpreter and close the shell."
-                ),
-                icons.cancel,
-                self._shellAction,
-                "closeShell",
-            ),
+            pyzo.shellCommandProjector.menu_action(
+                self, command_id, self.getShell
+            )
+            for command_id in pyzo.shellCommands.ordinary_command_ids
         ]
 
     def buildShellDebugActions(self):
         """Create the menu items for debug shell actions.
         Returns a list of all items added"""
-        icons = pyzo.icons
-
         return [
-            self.addItem(
-                translate("menu", "Debug next: proceed until next line"),
-                icons.debug_next,
-                self._debugAction,
-                "NEXT",
-            ),
-            self.addItem(
-                translate("menu", "Debug step into: proceed one step"),
-                icons.debug_step,
-                self._debugAction,
-                "STEP",
-            ),
-            self.addItem(
-                translate("menu", "Debug return: proceed until returns"),
-                icons.debug_return,
-                self._debugAction,
-                "RETURN",
-            ),
-            self.addItem(
-                translate(
-                    "menu",
-                    "Debug jump: set the next line to be executed"
-                    " ::: "
-                    "Sets the next line to be executed to the current selected line in the editor.",
-                ),
-                icons.arrow_in,
-                self._debugAction,
-                "JUMP",
-            ),
-            self.addItem(
-                translate("menu", "Debug continue: proceed to next breakpoint"),
-                icons.debug_continue,
-                self._debugAction,
-                "CONTINUE",
-            ),
-            self.addItem(
-                translate("menu", "Stop debugging"),
-                icons.debug_quit,
-                self._debugAction,
-                "STOP",
-            ),
+            pyzo.shellCommandProjector.menu_action(self, command_id)
+            for command_id in pyzo.shellCommands.debug_command_ids
         ]
 
     def getShell(self):
@@ -1459,14 +1373,11 @@ class ShellMenu(Menu):
 
         # Debug stuff
         self._debug_clear_text = translate("menu", "Clear all {} breakpoints")
-        self._debug_clear = self.addItem(
-            "", pyzo.icons.bug_delete, self._clearBreakPoints
+        self._debug_clear = pyzo.shellCommandProjector.menu_action(
+            self, "shell.debug.clear_breakpoints"
         )
-        self._debug_pm = self.addItem(
-            translate("menu", "Postmortem: debug from last traceback"),
-            pyzo.icons.bug_delete,
-            self._debugAction,
-            "START",
+        self._debug_pm = pyzo.shellCommandProjector.menu_action(
+            self, "shell.debug.start"
         )
         self._shellDebugActions = self.buildShellDebugActions()
         #
@@ -1510,41 +1421,7 @@ class ShellMenu(Menu):
         for e in pyzo.editors:
             bpcount += len(e.breakPoints())
         self._debug_clear.setText(self._debug_clear_text.format(bpcount))
-        # Determine state of PM button
-        debugmode = pyzo.shells._debugmode
-        self._debug_pm.setEnabled(debugmode == 0)
-        # The _shellDebugActions are enabled/disabled by the shellStack
-
-    def _shellAction(self, action):
-        """Call the method specified by 'action' on the current shell."""
-        shell = self.getShell()
-        if shell:
-            # Call the specified action
-            getattr(shell, action)()
-
-    def _debugAction(self, action):
-        shell = pyzo.shells.getExecutionShell()
-        if shell:
-            # Call the specified action
-            command = action.upper()
-
-            if command == "JUMP":
-                # We assume that the correct editor tab is selected because checking if
-                # the filepaths match (editor.id() == frames[frameNum - 1][0]) would
-                # only causes troubles, for example on filesystems that are not case
-                # sensitive.
-                editor = pyzo.editors.getCurrentEditor()
-                if editor is None:
-                    lineNumber = -1
-                else:
-                    lineNumber = editor.textCursor().blockNumber() + 1
-                command = "{} {}".format(command, lineNumber)
-
-            shell.executeCommand("DB {}\n".format(command))
-
-    def _clearBreakPoints(self, action=None):
-        for e in pyzo.editors:
-            e.clearBreakPoints()
+        pyzo.shellCommandProjector.refresh()
 
     def _editConfig2(self):
         """Edit, add and remove configurations for the shells."""
@@ -1593,8 +1470,8 @@ class ShellContextMenu(ShellMenu):
     """This is the context menu for the shell"""
 
     def __init__(self, shell, parent=None):
-        super().__init__(parent or shell, name="Shellcontextmenu")
         self._shell = shell
+        super().__init__(parent or shell, name="Shellcontextmenu")
 
     def build(self):
         """Build menu"""

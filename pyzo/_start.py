@@ -392,6 +392,8 @@ pyzo.icon = None  # The icon
 pyzo.parser = None  # The source parser
 pyzo.status = None  # The statusbar (or None)
 pyzo.commands = None  # Application-owned commands (peer-frame mode for now)
+pyzo.shellCommands = None  # Application-owned shell command behavior
+pyzo.shellCommandProjector = None  # Menu/toolbar action projections
 
 # Get directories of interest
 pyzo.appDataDir, pyzo.appConfigDir = paths.prepare_appdata_appconfig_dirs()

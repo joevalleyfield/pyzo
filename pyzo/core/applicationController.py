@@ -121,6 +121,7 @@ class PeerApplicationController(QtCore.QObject):
         workspace,
         frame_window,
         status_service,
+        shell_commands,
         request_quit,
         request_restart,
         set_style,
@@ -132,6 +133,7 @@ class PeerApplicationController(QtCore.QObject):
         self.workspace = WorkspaceAccess(workspace)
         self.active_peer = ActivePeerLookup(workspace, frame_window)
         self.status = StatusAccess(status_service)
+        self.shell_commands = shell_commands
         self.lifecycle = ApplicationLifecycleAccess(request_quit, request_restart)
         self.appearance = AppearanceAccess(set_style, request_restart)
         self.execution_target = ExecutionTargetAccess(

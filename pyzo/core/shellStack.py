@@ -191,23 +191,13 @@ class ShellStackWidget(QtWidgets.QWidget):
         by onCurrentChanged. Sets the debug button.
         """
 
-        execution_shell = getattr(
-            pyzo.shells, "getExecutionShell", pyzo.shells.getCurrentShell
-        )()
         if shell and shell._debugState:
             info = shell._debugState
             self._debugmode = info["debugmode"]
             self._dbs.setTrace(shell._debugState)
-            if shell is execution_shell:
-                for action in self._debugActions:
-                    action.setEnabled(self._debugmode == 2)
-                self._debugActions[-1].setEnabled(self._debugmode > 0)  # Stop
         else:
             self._debugmode = 0
             self._dbs.setTrace(None)
-            if shell is execution_shell:
-                for action in self._debugActions:
-                    action.setEnabled(False)
         if shell is pyzo.shells.getCurrentShell():
             # Send signal
             self.currentShellStateChanged.emit()
@@ -255,17 +245,24 @@ class ShellStackWidget(QtWidgets.QWidget):
         )
         self._shellButton.customContextMenuRequested.connect(self.contextMenuTriggered)
 
-        # Add actions
-        for action in pyzo.main.menuBar()._menumap["shell"]._shellActions:
-            action = self._toolbar.addAction(action)
+        # Add independent projections of application-owned shell commands.
+        self._shellActions = [
+            pyzo.shellCommandProjector.toolbar_action(
+                self._toolbar, command_id, self.getCurrentShell
+            )
+            for command_id in pyzo.shellCommands.ordinary_command_ids
+        ]
 
         self._toolbar.addSeparator()
 
         # Add debug actions
         self._debugActions = []
-        for action in pyzo.main.menuBar()._menumap["shell"]._shellDebugActions:
-            self._debugActions.append(action)
-            action = self._toolbar.addAction(action)
+        for command_id in pyzo.shellCommands.debug_command_ids:
+            self._debugActions.append(
+                pyzo.shellCommandProjector.toolbar_action(
+                    self._toolbar, command_id
+                )
+            )
 
         # Delayed-add debug control buttons
         self._toolbar.addWidget(self._dbs)

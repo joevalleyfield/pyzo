@@ -722,6 +722,10 @@ class MainWindow(QtWidgets.QMainWindow):
         from pyzo.core.editorGroups import install_editor_group_manager
         from pyzo.core.shellStack import ShellStackWidget
         from pyzo.core.shellGroups import install_shell_group_manager
+        from pyzo.core.shellCommands import (
+            ShellCommandProjector,
+            ShellCommandService,
+        )
         from pyzo.core import codeparser
         from pyzo.core.history import CommandHistory
         from pyzo.tools import ToolManager
@@ -934,6 +938,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._primaryEditors = pyzo.editors.createGroup()
         self._editorDock = self._editorHosts[self._primaryEditors]
         install_shell_group_manager(self._createShellHost, self)
+        pyzo.shellCommands = ShellCommandService(
+            pyzo.shells,
+            pyzo.editors,
+            pyzo.icons,
+            translate,
+            QtWidgets.qApp,
+        )
+        pyzo.shellCommandProjector = ShellCommandProjector(
+            pyzo.shellCommands, QtWidgets.qApp
+        )
 
         # Initialize command history
         pyzo.command_history = CommandHistory("command_history.py")
@@ -956,6 +970,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     frame_id
                 ),
                 status_service=lambda: self._peerStatusService,
+                shell_commands=pyzo.shellCommands,
                 request_quit=self.quit,
                 request_restart=self.restart,
                 set_style=self.setQtStyle,
@@ -2256,7 +2271,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("second", command)
             )
             try:
-                shell_menu._debugAction("START")
+                assert pyzo.shellCommands.invoke("shell.debug.start")
             finally:
                 first_shell.executeCommand = first_execute_command
                 second_shell.executeCommand = second_execute_command
@@ -2360,7 +2375,14 @@ class MainWindow(QtWidgets.QMainWindow):
         assert all(
             action in host._toolbar.actions() and action.isEnabled()
             for host in pyzo.shells.hosts
-            for action in shell_menu._shellActions
+            for action in host._shellActions
+        )
+        assert all(
+            set(host._shellActions).isdisjoint(shell_menu._shellActions)
+            for host in pyzo.shells.hosts
+        )
+        assert pyzo.application is None or (
+            pyzo.application.shell_commands is pyzo.shellCommands
         )
         print("Pyzo shell toolbar action enablement smoke test passed")
         if self._peerFrameMode:
