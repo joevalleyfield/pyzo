@@ -442,7 +442,10 @@ class ThemeEditorWidget(QtWidgets.QWidget):
             pyzo.config.settings.theme = new
             pyzo.saveConfig()
             # This may be better
-            pyzo.main.restart()
+            if pyzo.application is not None:
+                pyzo.application.appearance.restart()
+            else:
+                pyzo.main.restart()
         else:
             self.done.emit(1)
 

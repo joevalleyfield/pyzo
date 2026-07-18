@@ -577,8 +577,7 @@ class PyzoEditor(BaseTextCtrl):
 
     def _updateStatusBar(self):
         editor = pyzo.editors.getCurrentEditor()
-        sb = pyzo.main.statusBar()
-        sb.updateCursorInfo(editor)
+        pyzo.metadata.cursor(editor)
 
     def dragMoveEvent(self, event):
         """Otherwise cursor can get stuck.
@@ -610,8 +609,7 @@ class PyzoEditor(BaseTextCtrl):
 
     def setTitleInMainWindow(self):
         """set the title text in the main window to show filename."""
-        name, path = self._name, self._filename
-        pyzo.main.setMainTitle(path or name)
+        pyzo.metadata.document(self)
 
     def save(self, filename=None):
         """Save the file. No checking is done."""

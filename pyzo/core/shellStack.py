@@ -178,11 +178,7 @@ class ShellStackWidget(QtWidgets.QWidget):
         self._shellButton.updateShellMenu(shell)
 
         if shell is pyzo.shells.getCurrentShell():  # can be None
-            # Update application icon
-            if shell and shell._state in ["Busy"]:
-                pyzo.main.setWindowIcon(pyzo.iconRunning)
-            else:
-                pyzo.main.setWindowIcon(pyzo.icon)
+            pyzo.metadata.shell(shell)
             # Send signal
             self.currentShellStateChanged.emit()
 
@@ -199,6 +195,7 @@ class ShellStackWidget(QtWidgets.QWidget):
             self._debugmode = 0
             self._dbs.setTrace(None)
         if shell is pyzo.shells.getCurrentShell():
+            pyzo.metadata.shell(shell)
             # Send signal
             self.currentShellStateChanged.emit()
 

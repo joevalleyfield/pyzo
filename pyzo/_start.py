@@ -403,6 +403,7 @@ pyzo.shellCommandProjector = None  # Menu/toolbar action projections
 pyzo.runCommands = None  # Application-owned editor execution behavior
 pyzo.menuProjector = None  # Complete application menus projected into peer chrome
 pyzo.workspaceSession = None  # Application-owned peer workspace persistence
+pyzo.metadata = None  # Application-owned document/shell/status metadata projection
 
 # Get directories of interest
 pyzo.appDataDir, pyzo.appConfigDir = paths.prepare_appdata_appconfig_dirs()

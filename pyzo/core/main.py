@@ -729,7 +729,10 @@ class MainWindow(QtWidgets.QMainWindow):
             ShellCommandService,
         )
         from pyzo.core.runCommands import RunCommandService
-        from pyzo.core.applicationController import ToolWorkspaceAccess
+        from pyzo.core.applicationController import (
+            ApplicationMetadataAccess,
+            ToolWorkspaceAccess,
+        )
         from pyzo.core import codeparser
         from pyzo.core.history import CommandHistory
         from pyzo.tools import ToolManager
@@ -928,6 +931,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._editorHostSerial = 0
         self._shellHostSerial = 0
         self._menusReady = False
+        pyzo.metadata = ApplicationMetadataAccess(
+            update_document=self._projectDocumentMetadata,
+            update_cursor=self._projectCursorMetadata,
+            update_shell=self._projectShellMetadata,
+            show_status=self._projectStatusMetadata,
+        )
         if self._peerFrameMode:
             self._peerPaneFocusFilter = _PeerPaneFocusFilter(self)
             QtWidgets.QApplication.instance().installEventFilter(
@@ -999,6 +1008,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     shell
                 ),
                 tools=self._toolWorkspace,
+                metadata=pyzo.metadata,
             )
             pyzo.application = self._peerApplicationController
             pyzo.workspaceSession = WorkspaceSessionService(
@@ -1012,6 +1022,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.workspaceSession = None
             self.setStatusBar(StatusBar())
         self.statusBar().setVisible(pyzo.config.view.showStatusbar)
+        pyzo.metadata.cursor(pyzo.editors.getCurrentEditor())
 
         # Create menu
         from pyzo.core import menu
@@ -1065,6 +1076,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 assert pyzo.application.execution_target.shell() is (
                     pyzo.shells.getExecutionShell()
                 )
+                assert pyzo.application.metadata is pyzo.metadata
                 assert not hasattr(pyzo.application, "menuBar")
                 assert not hasattr(pyzo.application, "statusBar")
                 print("Pyzo peer application-controller smoke test passed")
@@ -1077,6 +1089,15 @@ class MainWindow(QtWidgets.QMainWindow):
             pyzo.editors.setDebugLineIndicators((__file__, 1))
             assert debug_item.editor._debugLineIndicator == 1
             if self._peerFrameMode:
+                debug_host = pyzo.editors._group_for_editor(debug_item.editor)
+                debug_dock = self._editorHosts[debug_host]
+                debug_pane_id = self._peerBackend._pane_id_from_dock(debug_dock)
+                assert self._peerWorkspace.panes[debug_pane_id].title == (
+                    debug_dock.windowTitle()
+                )
+                assert debug_dock.floatingDockContainer().windowTitle() == (
+                    debug_dock.windowTitle()
+                )
                 self._activatePeerPaneForWidget(first_item.editor)
                 first_group = pyzo.editors._group_for_editor(first_item.editor)
                 assert pyzo.editors.activeGroup is first_group
@@ -1182,6 +1203,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _onFocusedDockWidgetChanged(self, dock_widget):
         # Focus selects command/service context. It does not bind an editor to
         # an interpreter; execution affinity needs its own explicit resolver.
+        if self._peerFrameMode and dock_widget is not None:
+            self._projectPeerFrameMetadata(dock_widget)
         for host, dock in self._editorHosts.items():
             if dock_widget is dock:
                 pyzo.editors.setActiveGroup(host)
@@ -1428,7 +1451,86 @@ class MainWindow(QtWidgets.QMainWindow):
             item.editor, "_peerRecoveryConflict", False
         ):
             title += " ⚠"
+        self._setDockMetadata(dock, title)
+
+    def _projectDocumentMetadata(self, editor=None):
+        if self._peerFrameMode:
+            if editor is None or pyzo.editors is None:
+                return
+            host = pyzo.editors._group_for_editor(editor)
+            if host is not None:
+                self._updateEditorDockTitle(host)
+            return
+        path = editor._filename or editor._name if editor is not None else None
+        self.setMainTitle(path)
+
+    def _projectCursorMetadata(self, editor=None):
+        if self._peerFrameMode and not hasattr(self, "_peerStatusService"):
+            return
+        self.statusBar().updateCursorInfo(editor)
+
+    def _projectStatusMetadata(self, text, timeout=0):
+        if self._peerFrameMode and not hasattr(self, "_peerStatusService"):
+            return
+        self.statusBar().showMessage(text, timeout)
+
+    def _projectShellMetadata(self, shell=None):
+        if pyzo.shells is not None:
+            host = next(
+                (host for host in pyzo.shells.hosts if shell in host.getShells()),
+                None,
+            )
+            if host is not None:
+                self._updateShellDockTitle(host)
+        if not self._peerFrameMode:
+            running = shell is not None and shell._state in (
+                "Busy",
+                "Very busy",
+            )
+            self.setWindowIcon(pyzo.iconRunning if running else pyzo.icon)
+
+    def _setDockMetadata(self, dock, title, icon=None):
         dock.setWindowTitle(title)
+        if not self._peerFrameMode:
+            return
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
+        if pane_id not in self._peerWorkspace.panes:
+            return
+        result = self._peerWorkspace.update_pane_title(pane_id, title)
+        if not result.applied:
+            raise RuntimeError(result.detail)
+        window = dock.floatingDockContainer()
+        if window is not None and (
+            len(window.dockWidgets()) == 1
+            or self._peerWorkspace.active_pane_id == pane_id
+        ):
+            self._projectPeerFrameMetadata(dock, icon)
+
+    def _projectPeerFrameMetadata(self, dock, icon=None):
+        if not self._peerFrameMode:
+            return
+        try:
+            pane_id = self._peerBackend._pane_id_from_dock(dock)
+        except ValueError:
+            return
+        pane = self._peerWorkspace.panes.get(pane_id)
+        window = dock.floatingDockContainer()
+        if pane is None or window is None:
+            return
+        window.setWindowTitle(pane.title)
+        if icon is None:
+            host = next(
+                (
+                    host
+                    for host, shell_dock in self._shellHosts.items()
+                    if shell_dock is dock
+                ),
+                None,
+            )
+            shell = host.getCurrentShell() if host is not None else None
+            running = shell is not None and shell._state in ("Busy", "Very busy")
+            icon = pyzo.iconRunning if running else pyzo.icon
+        window.setWindowIcon(icon)
 
     def _removeEditorHost(self, host):
         dock = self._editorHosts.pop(host, None)
@@ -1987,7 +2089,19 @@ class MainWindow(QtWidgets.QMainWindow):
         shell = host.getCurrentShell()
         dock = self._shellHosts.get(host)
         if shell is not None and dock is not None:
-            dock.setWindowTitle(shellTitle(shell))
+            title = shellTitle(shell)
+            debug_state = shell._debugState or {}
+            if self._peerFrameMode:
+                if shell._state == "Debug" or debug_state.get("debugmode", 0) > 0:
+                    title += " — Debugging"
+                elif shell._state in ("Busy", "Very busy"):
+                    title += " — Running"
+            icon = (
+                pyzo.iconRunning
+                if shell._state in ("Busy", "Very busy")
+                else pyzo.icon
+            )
+            self._setDockMetadata(dock, title, icon)
 
     def _testPeerRunAndLiveDebugTick(self):
         """Advance the real-kernel run/debug smoke without blocking Qt."""
@@ -2043,6 +2157,19 @@ class MainWindow(QtWidgets.QMainWindow):
             debug_state = shell._debugState or {}
             if debug_state.get("debugmode") != 2:
                 return False
+            shell_host = next(
+                host for host in pyzo.shells.hosts if shell in host.getShells()
+            )
+            shell_dock = self._shellHosts[shell_host]
+            assert shell_dock.windowTitle().endswith("— Debugging")
+            shell_pane_id = self._peerBackend._pane_id_from_dock(shell_dock)
+            assert self._peerWorkspace.panes[shell_pane_id].title == (
+                shell_dock.windowTitle()
+            )
+            if self._peerWorkspace.active_pane_id == shell_pane_id:
+                assert shell_dock.floatingDockContainer().windowTitle() == (
+                    shell_dock.windowTitle()
+                )
             frames = debug_state["frames"]
             index = debug_state["index"]
             assert frames[index - 1][0] == state["path"]

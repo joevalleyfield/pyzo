@@ -91,6 +91,35 @@ class StatusAccess:
         return self._service()
 
 
+class ApplicationMetadataAccess:
+    """Project document, shell, and status metadata without a main window."""
+
+    def __init__(
+        self,
+        *,
+        update_document: Callable[[Any | None], Any],
+        update_cursor: Callable[[Any | None], Any],
+        update_shell: Callable[[Any | None], Any],
+        show_status: Callable[[str, int], Any],
+    ):
+        self._updateDocument = update_document
+        self._updateCursor = update_cursor
+        self._updateShell = update_shell
+        self._showStatus = show_status
+
+    def document(self, editor=None):
+        return self._updateDocument(editor)
+
+    def cursor(self, editor=None):
+        return self._updateCursor(editor)
+
+    def shell(self, shell=None):
+        return self._updateShell(shell)
+
+    def show_status(self, text, timeout=0):
+        return self._showStatus(text, timeout)
+
+
 class ApplicationLifecycleAccess:
     """Route application lifecycle independently from a window close event."""
 
@@ -169,6 +198,7 @@ class PeerApplicationController(QtCore.QObject):
         get_execution_shell,
         set_execution_shell,
         tools,
+        metadata,
     ):
         super().__init__(parent)
         self._legacyHost = legacy_host
@@ -184,6 +214,7 @@ class PeerApplicationController(QtCore.QObject):
             get_execution_shell, set_execution_shell
         )
         self.tools = tools
+        self.metadata = metadata
 
     @property
     def legacy_host(self):

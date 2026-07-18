@@ -1,4 +1,5 @@
 from pyzo.core.applicationController import (
+    ApplicationMetadataAccess,
     PeerApplicationController,
     ToolWorkspaceAccess,
 )
@@ -32,6 +33,15 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         close_dock=lambda dock: tool_calls.append(("close", dock)),
         peer_mode=True,
     )
+    metadata_calls = []
+    metadata = ApplicationMetadataAccess(
+        update_document=lambda editor: metadata_calls.append(("document", editor)),
+        update_cursor=lambda editor: metadata_calls.append(("cursor", editor)),
+        update_shell=lambda shell: metadata_calls.append(("shell", shell)),
+        show_status=lambda text, timeout: metadata_calls.append(
+            ("status", text, timeout)
+        ),
+    )
 
     controller = PeerApplicationController(
         parent=app,
@@ -47,6 +57,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         get_execution_shell=lambda: execution_shell,
         set_execution_shell=lambda shell: calls.append(("shell", shell)),
         tools=tools,
+        metadata=metadata,
     )
 
     assert isinstance(controller, QtCore.QObject)
@@ -64,6 +75,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.run_commands == "run-commands"
     assert controller.execution_target.shell() is execution_shell
     assert controller.tools is tools
+    assert controller.metadata is metadata
     assert not hasattr(controller, "menuBar")
     assert not hasattr(controller, "statusBar")
 
@@ -74,6 +86,10 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     controller.execution_target.select_shell(execution_shell)
     controller.tools.add_dock("dock", "target")
     controller.tools.close_dock("dock")
+    controller.metadata.document("editor")
+    controller.metadata.cursor("editor")
+    controller.metadata.shell("shell")
+    controller.metadata.show_status("message", 5000)
 
     assert calls == [
         "quit",
@@ -83,3 +99,9 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         ("shell", execution_shell),
     ]
     assert tool_calls == [("add", "dock", "target"), ("close", "dock")]
+    assert metadata_calls == [
+        ("document", "editor"),
+        ("cursor", "editor"),
+        ("shell", "shell"),
+        ("status", "message", 5000),
+    ]

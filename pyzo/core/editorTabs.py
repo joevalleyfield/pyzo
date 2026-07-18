@@ -819,7 +819,7 @@ class FileTabWidget(CompactTabWidget):
     def setTitleInMainWindowWhenTabChanged(self, index):
         # Valid index?
         if not (0 <= index < self.count()):
-            pyzo.main.setMainTitle()  # No open file
+            pyzo.metadata.document()  # No open file
 
         currentItem = self.currentItem()
         if currentItem:
@@ -1156,8 +1156,7 @@ class EditorTabs(QtWidgets.QWidget):
         self.currentChanged.emit()
         # Update status bar
         editor = pyzo.editors.getCurrentEditor()
-        sb = pyzo.main.statusBar()
-        sb.updateCursorInfo(editor)
+        pyzo.metadata.cursor(editor)
         self._findReplace.resetSearchResults()
 
     def getCurrentEditor(self):

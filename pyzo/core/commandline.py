@@ -79,7 +79,12 @@ def handle_command(command, arg):
 
     elif command == "close":
         # Close pyzo
-        pyzo.callLater(pyzo.main.quit)
+        target = (
+            pyzo.application.lifecycle.quit
+            if pyzo.application is not None
+            else pyzo.main.quit
+        )
+        pyzo.callLater(target)
         return "Closing Pyzo"
 
     elif command == "startexternalshell":
