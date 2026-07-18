@@ -1,4 +1,7 @@
-from pyzo.core.applicationController import PeerApplicationController
+from pyzo.core.applicationController import (
+    PeerApplicationController,
+    ToolWorkspaceAccess,
+)
 from pyzo.qt import QtCore, QtWidgets
 
 
@@ -22,6 +25,13 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     frame = object()
     execution_shell = object()
     calls = []
+    tool_calls = []
+    tools = ToolWorkspaceAccess(
+        dock_manager="dock-manager",
+        add_dock=lambda dock, target: tool_calls.append(("add", dock, target)),
+        close_dock=lambda dock: tool_calls.append(("close", dock)),
+        peer_mode=True,
+    )
 
     controller = PeerApplicationController(
         parent=app,
@@ -36,6 +46,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         set_style=lambda name: calls.append(("style", name)),
         get_execution_shell=lambda: execution_shell,
         set_execution_shell=lambda shell: calls.append(("shell", shell)),
+        tools=tools,
     )
 
     assert isinstance(controller, QtCore.QObject)
@@ -47,10 +58,12 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.active_peer.context().frame_id == "frame-a"
     assert controller.active_peer.frame_id() == "frame-a"
     assert controller.active_peer.window() is frame
+    assert controller.dialogs.parent() is frame
     assert controller.status.service is status
     assert controller.shell_commands == "shell-commands"
     assert controller.run_commands == "run-commands"
     assert controller.execution_target.shell() is execution_shell
+    assert controller.tools is tools
     assert not hasattr(controller, "menuBar")
     assert not hasattr(controller, "statusBar")
 
@@ -59,6 +72,8 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     controller.appearance.set_style("Fusion")
     controller.appearance.restart()
     controller.execution_target.select_shell(execution_shell)
+    controller.tools.add_dock("dock", "target")
+    controller.tools.close_dock("dock")
 
     assert calls == [
         "quit",
@@ -67,3 +82,4 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         "restart",
         ("shell", execution_shell),
     ]
+    assert tool_calls == [("add", "dock", "target"), ("close", "dock")]

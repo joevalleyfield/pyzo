@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from pyzo.qt import QtCore
+from pyzo.qt import QtCore, QtWidgets
 
 
 class WorkspaceAccess:
@@ -38,6 +38,46 @@ class ActivePeerLookup:
     def window(self):
         frame_id = self.frame_id()
         return self._frameWindow(frame_id) if frame_id is not None else None
+
+
+class DialogParentAccess:
+    """Resolve a visible dialog parent without relying on a hidden host."""
+
+    def __init__(self, active_peer: ActivePeerLookup):
+        self._activePeer = active_peer
+
+    def parent(self):
+        return self._activePeer.window() or QtWidgets.QApplication.activeWindow()
+
+
+class ToolWorkspaceAccess:
+    """Expose the operations needed by tools without exposing a main window."""
+
+    def __init__(
+        self,
+        *,
+        dock_manager,
+        add_dock: Callable[[Any, Any | None], Any],
+        close_dock: Callable[[Any], Any],
+        peer_mode: bool,
+        legacy_parent=None,
+    ):
+        self.dock_manager = dock_manager
+        self.peer_mode = peer_mode
+        self.legacy_parent = legacy_parent
+        self._addDock = add_dock
+        self._closeDock = close_dock
+
+    def widget_parent(self, dock):
+        """Parent tool contents to their owning dock for correct lifetime."""
+
+        return dock
+
+    def add_dock(self, dock, target_dock=None):
+        return self._addDock(dock, target_dock)
+
+    def close_dock(self, dock):
+        return self._closeDock(dock)
 
 
 class StatusAccess:
@@ -128,11 +168,13 @@ class PeerApplicationController(QtCore.QObject):
         set_style,
         get_execution_shell,
         set_execution_shell,
+        tools,
     ):
         super().__init__(parent)
         self._legacyHost = legacy_host
         self.workspace = WorkspaceAccess(workspace)
         self.active_peer = ActivePeerLookup(workspace, frame_window)
+        self.dialogs = DialogParentAccess(self.active_peer)
         self.status = StatusAccess(status_service)
         self.shell_commands = shell_commands
         self.run_commands = run_commands
@@ -141,6 +183,7 @@ class PeerApplicationController(QtCore.QObject):
         self.execution_target = ExecutionTargetAccess(
             get_execution_shell, set_execution_shell
         )
+        self.tools = tools
 
     @property
     def legacy_host(self):

@@ -426,9 +426,17 @@ class PyzoSourceStructure(QtWidgets.QWidget):
                 s = " --> ".join("{} {}".format(type, text) for type, text in path)
             else:
                 s = "top level"
-            pyzo.main.statusBar().showMessage("Source structure:    " + s)
+            if pyzo.application is not None:
+                pyzo.application.status.service.showMessage(
+                    "Source structure:    " + s
+                )
+            else:
+                pyzo.main.statusBar().showMessage("Source structure:    " + s)
         else:
-            pyzo.main.statusBar().showMessage("")
+            if pyzo.application is not None:
+                pyzo.application.status.service.showMessage("")
+            else:
+                pyzo.main.statusBar().showMessage("")
 
     @staticmethod
     def _getObjectForLine(objectList, lineNum):

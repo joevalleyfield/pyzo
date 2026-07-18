@@ -70,7 +70,12 @@ def simpleDialog(item, action, question, options, defaultOption):
     }
 
     # setup dialog
-    dlg = QtWidgets.QMessageBox(pyzo.main)
+    parent = (
+        pyzo.application.dialogs.parent()
+        if pyzo.application is not None
+        else pyzo.main
+    )
+    dlg = QtWidgets.QMessageBox(parent)
     dlg.setWindowTitle("Pyzo")
     dlg.setText(action + " file:\n{}".format(filename))
     dlg.setInformativeText(question)

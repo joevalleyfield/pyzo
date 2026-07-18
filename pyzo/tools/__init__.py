@@ -47,12 +47,13 @@ class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
     tool manager on closing.
     """
 
-    def __init__(self, parent, toolManager):
-        self._usingAds = QtAds is not None and hasattr(parent, "_dockManager")
+    def __init__(self, workspace, toolManager):
+        self._workspace = workspace
+        self._usingAds = QtAds is not None and workspace.dock_manager is not None
         if self._usingAds:
-            super().__init__(parent._dockManager, "")
+            super().__init__(workspace.dock_manager, "")
         else:
-            super().__init__(parent)
+            super().__init__(workspace.legacy_parent)
 
         # Store stuff
         self._toolManager = toolManager
@@ -67,7 +68,7 @@ class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
         self.setFeatures(
             DWF.DockWidgetMovable | DWF.DockWidgetClosable | DWF.DockWidgetFloatable
         )
-        if self._usingAds and getattr(parent, "_peerFrameMode", False):
+        if self._usingAds and workspace.peer_mode:
             # Pane close negotiation is introduced in the lifecycle
             # experiment. Until then, do not let a widget close bypass the
             # application-owned peer workspace.
@@ -105,7 +106,7 @@ class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
     def reload(self, toolClass):
         """Reload the widget with a new widget class."""
         old = self.widget()
-        new = toolClass(pyzo.main)
+        new = toolClass(self._workspace.widget_parent(self))
         self.setWidget(new)
         if old:
             old.close()
@@ -150,8 +151,9 @@ class ToolManager(QtCore.QObject):
     # This signal indicates a change in the loaded tools
     toolInstanceChange = QtCore.Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, workspace, parent=None):
         super().__init__(parent)
+        self._workspace = workspace
 
         # list of ToolDescription instances
         self._toolInfo = None
@@ -326,7 +328,8 @@ class ToolManager(QtCore.QObject):
         # Close old one
         if toolId in self._activeTools:
             old = self._activeTools[toolId].widget()
-            self._activeTools[toolId].setWidget(QtWidgets.QWidget(pyzo.main))
+            dock = self._activeTools[toolId]
+            dock.setWidget(QtWidgets.QWidget(self._workspace.widget_parent(dock)))
             if old:
                 old.close()
                 old.deleteLater()
@@ -354,26 +357,11 @@ class ToolManager(QtCore.QObject):
             pyzo.config.tools[toolId] = ssdf.new()
 
         # Create dock widget and add in the main window
-        dock = ToolDockWidget(pyzo.main, self)
+        dock = ToolDockWidget(self._workspace, self)
         dock.setTool(toolId, name, toolClass)
 
-        if splitWith and splitWith in self._activeTools:
-            otherDock = self._activeTools[splitWith]
-            if getattr(dock, "_usingAds", False):
-                pyzo.main.addAdsDockWidget(
-                    QtAds.RightDockWidgetArea, dock, otherDock
-                )
-            else:
-                pyzo.main.splitDockWidget(
-                    otherDock, dock, QtCore.Qt.Orientation.Horizontal
-                )
-        else:
-            if getattr(dock, "_usingAds", False):
-                pyzo.main.addAdsDockWidget(QtAds.RightDockWidgetArea, dock)
-            else:
-                pyzo.main.addDockWidget(
-                    QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock
-                )
+        otherDock = self._activeTools.get(splitWith) if splitWith else None
+        self._workspace.add_dock(dock, otherDock)
 
         # Add to list
         self._activeTools[toolId] = dock
@@ -389,10 +377,7 @@ class ToolManager(QtCore.QObject):
         """Close the tool with specified id."""
         if toolId in self._activeTools:
             dock = self._activeTools[toolId]
-            if getattr(pyzo.main, "_peerFrameMode", False):
-                pyzo.main.removePeerToolDock(dock)
-            else:
-                dock.close()
+            self._workspace.close_dock(dock)
 
     def getTool(self, toolId):
         """Get the tool widget instance, or None

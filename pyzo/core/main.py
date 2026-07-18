@@ -729,6 +729,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ShellCommandService,
         )
         from pyzo.core.runCommands import RunCommandService
+        from pyzo.core.applicationController import ToolWorkspaceAccess
         from pyzo.core import codeparser
         from pyzo.core.history import CommandHistory
         from pyzo.tools import ToolManager
@@ -739,9 +740,6 @@ class MainWindow(QtWidgets.QMainWindow):
             raise RuntimeError(
                 "The docking integration requires the PySide6QtAds package"
             ) from err
-
-        # Instantiate tool manager
-        pyzo.toolManager = ToolManager()
 
         # Instantiate and start source-code parser
         if pyzo.parser is None:
@@ -910,6 +908,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dockManager.focusedDockWidgetChanged.connect(
             self._onFocusedDockWidgetChanged
         )
+        self._toolWorkspace = ToolWorkspaceAccess(
+            dock_manager=self._dockManager,
+            add_dock=self._addToolDock,
+            close_dock=(
+                self.removePeerToolDock
+                if self._peerFrameMode
+                else lambda dock: dock.close()
+            ),
+            peer_mode=self._peerFrameMode,
+            legacy_parent=None if self._peerFrameMode else self,
+        )
+        pyzo.toolManager = ToolManager(self._toolWorkspace)
         self._QtAds = QtAds
         self._EditorTabs = EditorTabs
         self._ShellStackWidget = ShellStackWidget
@@ -988,6 +998,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 set_execution_shell=lambda shell: pyzo.shells.setExecutionShell(
                     shell
                 ),
+                tools=self._toolWorkspace,
             )
             pyzo.application = self._peerApplicationController
             pyzo.workspaceSession = WorkspaceSessionService(
@@ -1497,7 +1508,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _askPeerShellClose(self, lifecycle):
         state = lifecycle.shell_state()
-        dialog = QtWidgets.QMessageBox(self)
+        dialog = QtWidgets.QMessageBox(pyzo.application.dialogs.parent())
         dialog.setWindowTitle(translate("shell", "Close shell"))
         dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         dialog.setText(
@@ -1649,7 +1660,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _confirmPeerApplicationExit(self, _disposition):
         if not pyzo.config.advanced.alwaysAskWhenClosingPyzo:
             return True
-        dialog = QtWidgets.QMessageBox(None)
+        dialog = QtWidgets.QMessageBox(pyzo.application.dialogs.parent())
         dialog.setWindowTitle("Pyzo")
         dialog.setText(translate("main", "Do you really want to close Pyzo?"))
         close_button = dialog.addButton(QtWidgets.QMessageBox.StandardButton.Close)
@@ -1793,7 +1804,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _choosePeerRecoveryFailure(self, lifecycles, error):
         names = [lifecycle.recovery_snapshot().display_name for lifecycle in lifecycles]
-        dialog = QtWidgets.QMessageBox(None)
+        dialog = QtWidgets.QMessageBox(pyzo.application.dialogs.parent())
         dialog.setWindowTitle(translate("main", "Could not retain dirty buffers"))
         dialog.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         dialog.setText(
@@ -2522,7 +2533,8 @@ class MainWindow(QtWidgets.QMainWindow):
         result = pyzo.workspaceSession.restore(snapshot)
         assert result.applied, result.detail
         QtWidgets.QApplication.processEvents()
-        assert pyzo.workspaceSession.capture() == snapshot
+        restored_snapshot = pyzo.workspaceSession.capture()
+        assert restored_snapshot == snapshot, (snapshot, restored_snapshot)
         assert tuple(pyzo.editors) == editors_before
 
         invalid = dict(snapshot)
@@ -2931,6 +2943,19 @@ class MainWindow(QtWidgets.QMainWindow):
             if not result.applied:
                 raise RuntimeError(result.detail)
         return dock.dockAreaWidget()
+
+    def _addToolDock(self, dock, target_dock=None):
+        if getattr(dock, "_usingAds", False):
+            return self.addAdsDockWidget(
+                self._QtAds.RightDockWidgetArea, dock, target_dock
+            )
+        if target_dock is not None:
+            return self.splitDockWidget(
+                target_dock, dock, QtCore.Qt.Orientation.Horizontal
+            )
+        return self.addDockWidget(
+            QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock
+        )
 
     def removePeerToolDock(self, dock):
         if dock._toolManager is not None:
