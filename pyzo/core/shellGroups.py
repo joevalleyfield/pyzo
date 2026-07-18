@@ -99,7 +99,10 @@ class ShellGroupManager(QtCore.QObject):
             if shell in host.getShells():
                 host.removeShell(shell)
                 self._hosts.remove(host)
-                pyzo.main.removeShellHost(host)
+                if pyzo.application is not None:
+                    pyzo.application.panes.remove_shell_host(host)
+                else:
+                    pyzo.main.removeShellHost(host)
                 if self._activeHost is host:
                     self._activeHost = None
                     if self._hosts:

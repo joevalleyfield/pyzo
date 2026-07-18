@@ -563,11 +563,15 @@ class _PyzoToolClosePolicy:
         )
 
 
-class MainWindow(QtWidgets.QMainWindow):
+_PEER_FRAME_MODE = os.environ.get("PYZO_PEER_FRAMES") == "1"
+_ApplicationHostBase = QtCore.QObject if _PEER_FRAME_MODE else QtWidgets.QMainWindow
+
+
+class MainWindow(_ApplicationHostBase):
     def __init__(self, parent=None, locale=None):
         super().__init__(parent)
 
-        self._peerFrameMode = os.environ.get("PYZO_PEER_FRAMES") == "1"
+        self._peerFrameMode = _PEER_FRAME_MODE
 
         self._closeflag = 0  # Used during closing/restarting
 
@@ -575,50 +579,48 @@ class MainWindow(QtWidgets.QMainWindow):
         # Set title to something nice. On Ubuntu 12.10 this text is what
         # is being shown at the fancy title bar (since it's not properly
         # updated)
-        self.setMainTitle()
         loadAppIcons()
-        self.setWindowIcon(pyzo.icon)
-
-        # Restore window geometry before drawing for the first time,
-        # such that the window is in the right place
-        self.resize(800, 600)  # default size
         if not self._peerFrameMode:
+            self.setMainTitle()
+            self.setWindowIcon(pyzo.icon)
+
+            # Restore window geometry before drawing for the first time,
+            # such that the window is in the right place
+            self.resize(800, 600)  # default size
             self.restoreGeometry()
 
-        # Show splash screen (we need to set our color too)
-        w = SplashWidget(self, distro="no distro")
-        self.setCentralWidget(w)
-        self.setStyleSheet("QMainWindow { background-color: #268bd2;}")
+            # Show splash screen (we need to set our color too)
+            w = SplashWidget(self, distro="no distro")
+            self.setCentralWidget(w)
+            self.setStyleSheet("QMainWindow { background-color: #268bd2;}")
 
-        # Show empty window and disable updates for a while
-        self.show()
-        self.paintNow()
-        self.setUpdatesEnabled(False)
+            # Show empty window and disable updates for a while
+            self.show()
+            self.paintNow()
+            self.setUpdatesEnabled(False)
 
-        # Determine timeout for showing splash screen
-        splash_timeout = time.time() + 1.0
+            # Set locale of main widget, so that qt strings are translated
+            if locale:
+                self.setLocale(locale)
 
-        # Set locale of main widget, so that qt strings are translated
-        # in the right way
-        if locale:
-            self.setLocale(locale)
+        splash_timeout = time.time() + (0.0 if self._peerFrameMode else 1.0)
 
         # Store myself
         pyzo.main = self
 
         # Init dockwidget settings
-        self.setTabPosition(
-            QtCore.Qt.DockWidgetArea.AllDockWidgetAreas,
-            QtWidgets.QTabWidget.TabPosition.South,
-        )
-        self.setDockOptions(
-            QtWidgets.QMainWindow.DockOption.AllowTabbedDocks
-            | QtWidgets.QMainWindow.DockOption.AllowNestedDocks
-            # |  QtWidgets.QMainWindow.DockOption.AnimatedDocks
-        )
+        if not self._peerFrameMode:
+            self.setTabPosition(
+                QtCore.Qt.DockWidgetArea.AllDockWidgetAreas,
+                QtWidgets.QTabWidget.TabPosition.South,
+            )
+            self.setDockOptions(
+                QtWidgets.QMainWindow.DockOption.AllowTabbedDocks
+                | QtWidgets.QMainWindow.DockOption.AllowNestedDocks
+            )
 
-        # Set window atrributes
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
+            # Set window attributes
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_AlwaysShowToolTips, True)
 
         # Load icons and fonts
         loadIcons()
@@ -655,8 +657,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._populate()
 
         # Revert to normal background, and enable updates
-        self.setStyleSheet("")
-        self.setUpdatesEnabled(True)
+        if not self._peerFrameMode:
+            self.setStyleSheet("")
+            self.setUpdatesEnabled(True)
 
         if self._peerFrameMode:
             if "--test" not in sys.argv:
@@ -696,12 +699,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Handle any actions
         commandline.handle_cmd_args()
 
-        if self._peerFrameMode:
-            # The QMainWindow remains an application-service host for this
-            # experiment. Every user-visible workspace frame is owned by the
-            # peer-frame backend.
-            self.hide()
-
     # To force drawing ourselves
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -731,6 +728,7 @@ class MainWindow(QtWidgets.QMainWindow):
         from pyzo.core.runCommands import RunCommandService
         from pyzo.core.applicationController import (
             ApplicationMetadataAccess,
+            PaneLifecycleAccess,
             ToolWorkspaceAccess,
         )
         from pyzo.core import codeparser
@@ -937,6 +935,11 @@ class MainWindow(QtWidgets.QMainWindow):
             update_shell=self._projectShellMetadata,
             show_status=self._projectStatusMetadata,
         )
+        self._paneLifecycle = PaneLifecycleAccess(
+            remove_shell_host=self.removeShellHost,
+            request_shell_close=self._requestPeerShellClose,
+            retire_editor_recovery=self._retirePeerRecoveryForEditor,
+        )
         if self._peerFrameMode:
             self._peerPaneFocusFilter = _PeerPaneFocusFilter(self)
             QtWidgets.QApplication.instance().installEventFilter(
@@ -992,7 +995,6 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._peerApplicationController = PeerApplicationController(
                 parent=QtWidgets.qApp,
-                legacy_host=self,
                 workspace=self._peerWorkspace,
                 frame_window=lambda frame_id: self._peerBackend.frame_windows.get(
                     frame_id
@@ -1009,8 +1011,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 ),
                 tools=self._toolWorkspace,
                 metadata=pyzo.metadata,
+                panes=self._paneLifecycle,
             )
             pyzo.application = self._peerApplicationController
+            pyzo.main = pyzo.application
             pyzo.workspaceSession = WorkspaceSessionService(
                 self._peerWorkspace,
                 lambda: self._peerBackend.frame_windows,
@@ -1040,7 +1044,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 command_menu_titles={VIEW_STATUS_COMMAND: view_title},
             )
             pyzo.menuProjector = self._peerCommandProjector
-            assert not self.menuBar().actions()
         else:
             menu.buildMenus(self.menuBar())
             pyzo.menuProjector = None
@@ -1063,7 +1066,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._peerFrameMode:
                 assert isinstance(pyzo.application, QtCore.QObject)
                 assert not isinstance(pyzo.application, QtWidgets.QWidget)
-                assert pyzo.application.legacy_host is self
+                assert not isinstance(self, QtWidgets.QWidget)
+                assert pyzo.main is pyzo.application
+                assert not any(
+                    isinstance(widget, QtWidgets.QMainWindow)
+                    for widget in QtWidgets.QApplication.topLevelWidgets()
+                )
                 assert pyzo.application.workspace.model is self._peerWorkspace
                 assert pyzo.application.workspace.snapshot() == (
                     self._peerWorkspace.serialize_layout()
@@ -1077,6 +1085,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     pyzo.shells.getExecutionShell()
                 )
                 assert pyzo.application.metadata is pyzo.metadata
+                assert pyzo.application.panes is self._paneLifecycle
                 assert not hasattr(pyzo.application, "menuBar")
                 assert not hasattr(pyzo.application, "statusBar")
                 print("Pyzo peer application-controller smoke test passed")
@@ -1331,10 +1340,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _createEditorHost(self):
         self._editorHostSerial += 1
-        host = self._EditorTabs(self)
-        host.setObjectName(f"pyzo-editor-host-{self._editorHostSerial}")
         dock = self._QtAds.CDockWidget(self._dockManager, "Untitled")
         dock.setObjectName(f"pyzo-editor-dock-{self._editorHostSerial}")
+        host = self._EditorTabs(dock)
+        host.setObjectName(f"pyzo-editor-host-{self._editorHostSerial}")
         dock.setWidget(host)
         if self._peerFrameMode:
             self._registerPeerDock(
@@ -1545,10 +1554,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _createShellHost(self):
         self._shellHostSerial += 1
-        host = self._ShellStackWidget(self)
-        host.setObjectName(f"pyzo-shell-host-{self._shellHostSerial}")
         dock = self._QtAds.CDockWidget(self._dockManager, "Shell")
         dock.setObjectName(f"pyzo-shell-dock-{self._shellHostSerial}")
+        host = self._ShellStackWidget(dock)
+        host.setObjectName(f"pyzo-shell-host-{self._shellHostSerial}")
         features = dock.DockWidgetFeature
         if self._peerFrameMode or pyzo.config.settings.allowFloatingShell:
             dock.setFeatures(features.DockWidgetMovable | features.DockWidgetFloatable)
@@ -3151,13 +3160,16 @@ class MainWindow(QtWidgets.QMainWindow):
             action.text().replace("&", "")
             for action in self._peerCommandProjector.primary_menu_bar().actions()
         ] == expected_menu_titles
-        assert not self.menuBar().actions()
         status_was_visible = self.statusBar().isVisible()
         self.statusBar().setVisible(True)
         self.statusBar().showMessage("Peer status smoke")
         self.statusBar().updateCursorInfo(pyzo.editors.getCurrentEditor())
         assert self.statusBar().currentMessage() == "Peer status smoke"
         assert not self.findChildren(QtWidgets.QStatusBar)
+        assert not any(
+            isinstance(widget, QtWidgets.QMainWindow)
+            for widget in QtWidgets.QApplication.topLevelWidgets()
+        )
         peer_status_bars = tuple(
             self._peerStatusProjector.status_bar_for(window)
             for window in peer_windows

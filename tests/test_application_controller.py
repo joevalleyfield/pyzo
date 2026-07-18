@@ -1,5 +1,6 @@
 from pyzo.core.applicationController import (
     ApplicationMetadataAccess,
+    PaneLifecycleAccess,
     PeerApplicationController,
     ToolWorkspaceAccess,
 )
@@ -21,7 +22,6 @@ class Workspace:
 def test_peer_application_controller_is_a_non_window_service_boundary():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     workspace = Workspace()
-    legacy_host = object()
     status = object()
     frame = object()
     execution_shell = object()
@@ -42,10 +42,17 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
             ("status", text, timeout)
         ),
     )
+    pane_calls = []
+    panes = PaneLifecycleAccess(
+        remove_shell_host=lambda host: pane_calls.append(("remove", host)),
+        request_shell_close=lambda shell: pane_calls.append(("close", shell)),
+        retire_editor_recovery=lambda editor, **options: pane_calls.append(
+            ("retire", editor, options)
+        ),
+    )
 
     controller = PeerApplicationController(
         parent=app,
-        legacy_host=legacy_host,
         workspace=workspace,
         frame_window=lambda frame_id: frame if frame_id == "frame-a" else None,
         status_service=lambda: status,
@@ -58,12 +65,12 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         set_execution_shell=lambda shell: calls.append(("shell", shell)),
         tools=tools,
         metadata=metadata,
+        panes=panes,
     )
 
     assert isinstance(controller, QtCore.QObject)
     assert not isinstance(controller, QtWidgets.QWidget)
     assert controller.parent() is app
-    assert controller.legacy_host is legacy_host
     assert controller.workspace.model is workspace
     assert controller.workspace.snapshot() == {"schema": 2, "frames": []}
     assert controller.active_peer.context().frame_id == "frame-a"
@@ -76,6 +83,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.execution_target.shell() is execution_shell
     assert controller.tools is tools
     assert controller.metadata is metadata
+    assert controller.panes is panes
     assert not hasattr(controller, "menuBar")
     assert not hasattr(controller, "statusBar")
 
@@ -90,6 +98,11 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     controller.metadata.cursor("editor")
     controller.metadata.shell("shell")
     controller.metadata.show_status("message", 5000)
+    controller.panes.remove_shell_host("host")
+    controller.panes.request_shell_close("shell")
+    controller.panes.retire_editor_recovery(
+        "editor", destructive_fallback=True
+    )
 
     assert calls == [
         "quit",
@@ -104,4 +117,9 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         ("cursor", "editor"),
         ("shell", "shell"),
         ("status", "message", 5000),
+    ]
+    assert pane_calls == [
+        ("remove", "host"),
+        ("close", "shell"),
+        ("retire", "editor", {"destructive_fallback": True}),
     ]

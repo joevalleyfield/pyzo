@@ -80,6 +80,32 @@ class ToolWorkspaceAccess:
         return self._closeDock(dock)
 
 
+class PaneLifecycleAccess:
+    """Route pane cleanup and close negotiation without exposing its host."""
+
+    def __init__(
+        self,
+        *,
+        remove_shell_host: Callable[[Any], Any],
+        request_shell_close: Callable[[Any], Any],
+        retire_editor_recovery: Callable[[Any, bool], Any],
+    ):
+        self._removeShellHost = remove_shell_host
+        self._requestShellClose = request_shell_close
+        self._retireEditorRecovery = retire_editor_recovery
+
+    def remove_shell_host(self, host):
+        return self._removeShellHost(host)
+
+    def request_shell_close(self, shell):
+        return self._requestShellClose(shell)
+
+    def retire_editor_recovery(self, editor, *, destructive_fallback=False):
+        return self._retireEditorRecovery(
+            editor, destructive_fallback=destructive_fallback
+        )
+
+
 class StatusAccess:
     """Locate the application-owned status service without a status bar."""
 
@@ -177,16 +203,14 @@ class ExecutionTargetAccess:
 class PeerApplicationController(QtCore.QObject):
     """Non-window root for peer-mode application services.
 
-    ``legacy_host`` is intentionally explicit migration scaffolding. The
-    controller does not forward arbitrary attributes to it, so new peer code
-    cannot accidentally acquire ``QMainWindow`` APIs through this boundary.
+    The controller does not forward arbitrary host attributes, so peer code
+    cannot accidentally acquire window APIs through this boundary.
     """
 
     def __init__(
         self,
         *,
         parent,
-        legacy_host,
         workspace,
         frame_window,
         status_service,
@@ -199,9 +223,9 @@ class PeerApplicationController(QtCore.QObject):
         set_execution_shell,
         tools,
         metadata,
+        panes,
     ):
         super().__init__(parent)
-        self._legacyHost = legacy_host
         self.workspace = WorkspaceAccess(workspace)
         self.active_peer = ActivePeerLookup(workspace, frame_window)
         self.dialogs = DialogParentAccess(self.active_peer)
@@ -215,9 +239,4 @@ class PeerApplicationController(QtCore.QObject):
         )
         self.tools = tools
         self.metadata = metadata
-
-    @property
-    def legacy_host(self):
-        """Return the temporary host only for named migration sites."""
-
-        return self._legacyHost
+        self.panes = panes

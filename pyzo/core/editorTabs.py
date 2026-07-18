@@ -1516,8 +1516,8 @@ class EditorTabs(QtWidgets.QWidget):
                 return  # cancel reloading
 
         editor.reload()
-        if getattr(pyzo.main, "_peerFrameMode", False):
-            pyzo.main._retirePeerRecoveryForEditor(
+        if pyzo.application is not None:
+            pyzo.application.panes.retire_editor_recovery(
                 editor, destructive_fallback=True
             )
         self._tabs.updateItems()
@@ -1622,8 +1622,8 @@ class EditorTabs(QtWidgets.QWidget):
             # Return now
             return False
 
-        if getattr(pyzo.main, "_peerFrameMode", False):
-            pyzo.main._retirePeerRecoveryForEditor(
+        if pyzo.application is not None:
+            pyzo.application.panes.retire_editor_recovery(
                 editor, destructive_fallback=True
             )
 

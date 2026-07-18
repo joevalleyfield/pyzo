@@ -1765,8 +1765,8 @@ class PythonShell(BaseShell):
         will work :)
         """
 
-        if getattr(pyzo.main, "_peerFrameMode", False):
-            return pyzo.main._requestPeerShellClose(self)
+        if pyzo.application is not None:
+            return pyzo.application.panes.request_shell_close(self)
         return self.closeShellCommitted()
 
     def closeShellCommitted(self, terminate_kernel=True):

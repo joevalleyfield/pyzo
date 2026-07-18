@@ -300,7 +300,7 @@ def start():
     appLocale = setLanguage(pyzo.config.settings.language)
 
     # Create main window, using the selected locale
-    MainWindow(None, appLocale)
+    host = MainWindow(None, appLocale)
 
     # In test mode, we close after a bounded startup smoke interval.
     # We also write "Closed" to the log (if a filename is provided) which we use
@@ -319,36 +319,34 @@ def start():
 
         import time
 
-        testTimeout = (
-            10.0 if getattr(pyzo.main, "_peerFrameMode", False) else 5.0
-        )
+        testTimeout = 10.0 if host._peerFrameMode else 5.0
 
         def testrunTimerCallback(*args):
             dt = time.time() - startTime
             print("*** testrunTimerCallback:", dt, "s ***")
-            if getattr(pyzo.main, "_peerFrameMode", False):
+            if host._peerFrameMode:
                 try:
-                    pyzo.main._testPeerRunAndLiveDebugTick()
+                    host._testPeerRunAndLiveDebugTick()
                 except Exception:
-                    pyzo.main._peerRunDebugSmokeError = traceback.format_exc()
-                    print(pyzo.main._peerRunDebugSmokeError, file=sys.stderr)
-                error = getattr(pyzo.main, "_peerRunDebugSmokeError", None)
+                    host._peerRunDebugSmokeError = traceback.format_exc()
+                    print(host._peerRunDebugSmokeError, file=sys.stderr)
+                error = getattr(host, "_peerRunDebugSmokeError", None)
                 if error:
                     timer.stop()
                     QtWidgets.qApp.exit(1)
                     return
             if time.time() - startTime > testTimeout:
                 timer.stop()
-                if getattr(pyzo.main, "_peerFrameMode", False) and getattr(
-                    pyzo.main, "_peerRunDebugSmoke", {}
+                if host._peerFrameMode and getattr(
+                    host, "_peerRunDebugSmoke", {}
                 ).get("phase") != "complete":
                     print(
                         "Peer run/debug smoke did not complete within {} seconds: phase={}, observation={}".format(
                             testTimeout,
-                            getattr(pyzo.main, "_peerRunDebugSmoke", {}).get(
+                            getattr(host, "_peerRunDebugSmoke", {}).get(
                                 "phase"
                             ),
-                            getattr(pyzo.main, "_peerRunDebugSmoke", {}).get(
+                            getattr(host, "_peerRunDebugSmoke", {}).get(
                                 "affinity_observation"
                             ),
                         ),
@@ -361,7 +359,7 @@ def start():
                 if os.getenv("PYZO_LOG", ""):
                     with open(os.getenv("PYZO_LOG"), "at") as fd:
                         fd.write(msg + "\n")
-                if getattr(pyzo.main, "_peerFrameMode", False):
+                if host._peerFrameMode:
                     retained_text = os.getenv("PYZO_EXPECT_EXIT_RETENTION_TEXT")
                     if retained_text:
                         item = pyzo.editors.newFile()
@@ -369,13 +367,16 @@ def start():
                         item.editor.lineEndings = "CRLF"
                         item.editor.useBom = True
                         item.editor.document().setModified(True)
-                    pyzo.main._peerDirtyCloseChooser = (
+                    host._peerDirtyCloseChooser = (
                         lambda _document_id, _lifecycle: "discard"
                     )
-                    pyzo.main._peerShellCloseChooser = (
+                    host._peerShellCloseChooser = (
                         lambda _pane_id, _lifecycle: "terminate"
                     )
-                pyzo.main.quit()
+                if pyzo.application is not None:
+                    pyzo.application.lifecycle.quit()
+                else:
+                    host.quit()
 
         startTime = time.time()
         timer = QtCore.QTimer()
@@ -392,7 +393,7 @@ def start():
 # List of names that are later overriden (in main.py)
 pyzo.editors = None  # The editor stack instance
 pyzo.shells = None  # The shell stack instance
-pyzo.main = None  # The mainwindow
+pyzo.main = None  # Legacy main window or peer application controller
 pyzo.application = None  # Non-window application controller in peer mode
 pyzo.icon = None  # The icon
 pyzo.parser = None  # The source parser
