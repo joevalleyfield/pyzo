@@ -47,12 +47,20 @@ class ShellGroupManager(QtCore.QObject):
 
     def _register_host(self, host):
         self._hosts.append(host)
-        host.currentShellChanged.connect(lambda: self.setActiveHost(host))
+        host.currentShellChanged.connect(
+            lambda: self._forward_current_shell_from(host)
+        )
         host.currentShellStateChanged.connect(
             lambda: self._forward_state_from(host)
         )
         if self._contextMenusReady:
             host.addContextMenu()
+
+    def _forward_current_shell_from(self, host):
+        if host is self._activeHost:
+            self.currentShellChanged.emit()
+        else:
+            self.setActiveHost(host)
 
     def _forward_state_from(self, host):
         if host is self._activeHost:

@@ -2354,6 +2354,15 @@ class MainWindow(QtWidgets.QMainWindow):
         assert len(pyzo.shells.hosts) == 2
         assert all(len(host.getShells()) == 1 for host in pyzo.shells.hosts)
         assert pyzo.shells.getCurrentShell() is second_shell
+        shell_menu = self.menuBar()._menumap["shell"]
+        assert shell_menu._shellActions
+        assert all(action.isEnabled() for action in shell_menu._shellActions)
+        assert all(
+            action in host._toolbar.actions() and action.isEnabled()
+            for host in pyzo.shells.hosts
+            for action in shell_menu._shellActions
+        )
+        print("Pyzo shell toolbar action enablement smoke test passed")
         if self._peerFrameMode:
             editor_group = pyzo.editors.activeGroup
             editor_dock = self._editorHosts[editor_group]
