@@ -387,6 +387,7 @@ def start():
 pyzo.editors = None  # The editor stack instance
 pyzo.shells = None  # The shell stack instance
 pyzo.main = None  # The mainwindow
+pyzo.application = None  # Non-window application controller in peer mode
 pyzo.icon = None  # The icon
 pyzo.parser = None  # The source parser
 pyzo.status = None  # The statusbar (or None)

@@ -748,6 +748,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtAds.CDockManager.setConfigFlag(config_flag.EqualSplitOnInsertion, True)
 
         if self._peerFrameMode:
+            from pyzo.core.applicationController import PeerApplicationController
             from spikes.peer_frames.commands import (
                 CommandDescriptor,
                 CommandRegistry,
@@ -947,7 +948,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self._peerStatusService = PeerStatusService(
                 self._peerStatusState, self
             )
+            self._peerApplicationController = PeerApplicationController(
+                parent=QtWidgets.qApp,
+                legacy_host=self,
+                workspace=self._peerWorkspace,
+                frame_window=lambda frame_id: self._peerBackend.frame_windows.get(
+                    frame_id
+                ),
+                status_service=lambda: self._peerStatusService,
+                request_quit=self.quit,
+                request_restart=self.restart,
+                set_style=self.setQtStyle,
+                get_execution_shell=lambda: pyzo.shells.getExecutionShell(),
+                set_execution_shell=lambda shell: pyzo.shells.setExecutionShell(
+                    shell
+                ),
+            )
+            pyzo.application = self._peerApplicationController
         else:
+            pyzo.application = None
             self.setStatusBar(StatusBar())
         self.statusBar().setVisible(pyzo.config.view.showStatusbar)
 
@@ -972,6 +991,25 @@ class MainWindow(QtWidgets.QMainWindow):
             assert all(group._tabs.count() == 1 for group in pyzo.editors.groups)
             assert all(group._tabs.tabBar().isHidden() for group in pyzo.editors.groups)
             print("Pyzo independent editor-dock smoke test passed")
+            if self._peerFrameMode:
+                assert isinstance(pyzo.application, QtCore.QObject)
+                assert not isinstance(pyzo.application, QtWidgets.QWidget)
+                assert pyzo.application.legacy_host is self
+                assert pyzo.application.workspace.model is self._peerWorkspace
+                assert pyzo.application.workspace.snapshot() == (
+                    self._peerWorkspace.serialize_layout()
+                )
+                assert pyzo.application.active_peer.context() == (
+                    self._peerWorkspace.resolve_active_context()
+                )
+                assert pyzo.application.active_peer.window() is not None
+                assert pyzo.application.status.service is self._peerStatusService
+                assert pyzo.application.execution_target.shell() is (
+                    pyzo.shells.getExecutionShell()
+                )
+                assert not hasattr(pyzo.application, "menuBar")
+                assert not hasattr(pyzo.application, "statusBar")
+                print("Pyzo peer application-controller smoke test passed")
             # Exercise the debugger-facing facade: source loading gets its own
             # document dock and indicators are broadcast to every document.
             debug_item = pyzo.editors.loadFile(__file__, ignoreFail=True)
