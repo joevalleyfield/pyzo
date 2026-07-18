@@ -30,6 +30,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         frame_window=lambda frame_id: frame if frame_id == "frame-a" else None,
         status_service=lambda: status,
         shell_commands="shell-commands",
+        run_commands="run-commands",
         request_quit=lambda: calls.append("quit"),
         request_restart=lambda: calls.append("restart"),
         set_style=lambda name: calls.append(("style", name)),
@@ -48,6 +49,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.active_peer.window() is frame
     assert controller.status.service is status
     assert controller.shell_commands == "shell-commands"
+    assert controller.run_commands == "run-commands"
     assert controller.execution_target.shell() is execution_shell
     assert not hasattr(controller, "menuBar")
     assert not hasattr(controller, "statusBar")

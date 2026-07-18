@@ -726,6 +726,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ShellCommandProjector,
             ShellCommandService,
         )
+        from pyzo.core.runCommands import RunCommandService
         from pyzo.core import codeparser
         from pyzo.core.history import CommandHistory
         from pyzo.tools import ToolManager
@@ -951,6 +952,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Initialize command history
         pyzo.command_history = CommandHistory("command_history.py")
+        pyzo.runCommands = RunCommandService(
+            pyzo.shells,
+            pyzo.editors,
+            pyzo.config,
+            pyzo.command_history,
+            translate,
+            lambda: QtWidgets.QApplication.activeWindow(),
+            QtWidgets.qApp,
+        )
 
         # Create the default shell when returning to the event queue
         callLater(pyzo.shells.addShell)
@@ -971,6 +981,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ),
                 status_service=lambda: self._peerStatusService,
                 shell_commands=pyzo.shellCommands,
+                run_commands=pyzo.runCommands,
                 request_quit=self.quit,
                 request_restart=self.restart,
                 set_style=self.setQtStyle,
@@ -1965,7 +1976,7 @@ class MainWindow(QtWidgets.QMainWindow):
             editor = item.editor
             self._activatePeerPaneForWidget(editor)
             assert pyzo.editors.getCurrentEditor() is editor
-            self.menuBar()._menumap["run"]._runFile((False, False), editor)
+            pyzo.runCommands.run_file((False, False), editor)
             state.update(
                 phase="wait-run",
                 shell=shell,
@@ -1982,7 +1993,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 return False
             editor.toggleBreakpoint(5, triState=False)
             assert editor.breakPoints() == [5]
-            self.menuBar()._menumap["run"]._runFile((False, False), editor)
+            pyzo.runCommands.run_file((False, False), editor)
             state["phase"] = "wait-debug"
             return False
 
@@ -2047,7 +2058,7 @@ class MainWindow(QtWidgets.QMainWindow):
             assert editor_dock in self._peerBackend.frame_windows[
                 source_frame_id
             ].dockWidgets()
-            self.menuBar()._menumap["run"]._runFile((False, False), editor)
+            pyzo.runCommands.run_file((False, False), editor)
             state.update(
                 phase="wait-exception",
                 path=path,
@@ -2315,8 +2326,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             )
             assert affinity_frame_id not in self._peerWorkspace.frames
-            assert run_menu._getShellAndEditor("affinity", False)[0] is second_shell
-            run_menu._runFile((False, False), editor)
+            assert (
+                pyzo.runCommands.get_shell_and_editor("affinity")[0]
+                is second_shell
+            )
+            pyzo.runCommands.run_file((False, False), editor)
             state.update(
                 phase="wait-affinity-run",
                 editor=editor,
@@ -2383,6 +2397,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         assert pyzo.application is None or (
             pyzo.application.shell_commands is pyzo.shellCommands
+            and pyzo.application.run_commands is pyzo.runCommands
         )
         print("Pyzo shell toolbar action enablement smoke test passed")
         if self._peerFrameMode:

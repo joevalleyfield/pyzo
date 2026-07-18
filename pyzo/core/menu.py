@@ -26,112 +26,6 @@ from pyzo import translate
 
 from pyzo.core.pdfExport import PdfExport
 
-from pyzo.codeeditor.parsers.python_parser import CellCommentToken
-import pyzo.codeeditor.parsers.tokens as Tokens
-
-
-def skipNestedTokens(tokens, indOpening):
-    """finds the end of the nested parens expression given the opening paren
-
-    Parens can be round parentheses, square brackets and curly braces.
-    "indOpening" is the index for list "tokens" where the opening paren is located.
-    Tokens are examinded from left to right, only testing for correct matching of
-    nested parens.
-
-    return value:
-        the index of the closing paren token that matches the opening paren
-        or None if the paren could not be found or nested parens do not match
-    """
-    stack = []
-    closingParensDict = {"(": ")", "[": "]", "{": "}"}
-    for i, t in enumerate(tokens[indOpening:], start=indOpening):
-        s = str(t)
-        if s in "([{":
-            stack.append(s)
-            continue
-        if s in ")]}":
-            if len(stack) == 0 or closingParensDict[stack.pop()] != s:
-                return None  # parens do not match
-            if len(stack) == 0:
-                break  # finished successfully
-    else:
-        return None  # matching paren not found
-    indClosing = i
-    return indClosing
-
-
-def findLeftResultInTokens(tokens):
-    """finds the tokens before an assignment operator and returns them as a string
-
-    return value:
-        the tokens before the assignment operator, as a (single) string
-        or None, if no assignment operator was found
-
-    examples with stringified input tokens:
-        "(a, (b, c)) = xyz" --> "(a, (b, c))"
-        "x,=[2]" --> "x"
-        "x *= 3" --> "x"
-        "x;y=5" --> "x"
-        "a = b = c = 5" --> "a"
-        "x == y" --> None
-        "456" --> None
-    """
-    leftResult = None
-    indToken = 0
-    while indToken < len(tokens):
-        t = tokens[indToken]
-        if isinstance(t, Tokens.NonIdentifierToken):
-            s = str(t)
-            if ";" in s:
-                break
-            i = s.find("=")
-            if i >= 0:
-                if s[i : i + 2] == "==":
-                    break
-                sPre = s[: i + 1]
-                assignments = (
-                    " =",
-                    ",=",
-                    "+=",
-                    "-=",
-                    "**=",
-                    "*=",
-                    "//=",
-                    "/=",
-                    "%=",
-                    "^=",
-                    "&=",
-                    "|=",
-                    "<<=",
-                    ">>=",
-                    "@=",
-                )  # have "**=" before "*=" and "//=" before "/=" !!!
-                if sPre.endswith(assignments):
-                    for needle in assignments:
-                        if sPre.endswith(needle):
-                            leftResult = (
-                                "".join(str(t) for t in tokens[:indToken])
-                                + sPre[: -len(needle)]
-                            )
-                            break
-                    break
-        elif isinstance(t, Tokens.ParenthesisToken) and str(t) in "([{":
-            indClosing = skipNestedTokens(tokens, indToken)
-            if indClosing is None:
-                break  # mismatching or missing paren
-            indToken = indClosing + 1
-            continue
-        elif isinstance(t, Tokens.ParenthesisToken) and str(t) in ")]}":
-            break  # missing opening paren
-        indToken += 1
-
-    if leftResult is not None:
-        leftResult = leftResult.strip()
-        if leftResult.endswith(","):
-            leftResult = leftResult[:-1].rstrip()
-    return leftResult
-
-
 def buildMenus(menuBar):
     """
     Build all the menus
@@ -1750,7 +1644,7 @@ class EditorContextMenu(Menu):
                 "Run selection ::: Run the current editor's selected lines, selected words on the current line, or current line if there is no selection.",
             ),
             icons.run_lines,
-            self._runSelected,
+            pyzo.runCommands.run_selected,
         )
 
     def _editItemCallback(self, action):
@@ -1763,11 +1657,6 @@ class EditorContextMenu(Menu):
             self._editor.helpOnText(self._pos)
         else:
             getattr(self._editor, action)()
-
-    def _runSelected(self):
-        runMenu = pyzo.main.menuBar()._menumap["run"]
-        runMenu._runSelected()
-
 
 class EditorTabContextMenu(Menu):
     def __init__(self, *args, **kwds):
@@ -1935,13 +1824,9 @@ class EditorTabContextMenu(Menu):
             else:
                 pyzo.editors._tabs._mainFile = item.id
         elif action == "run":
-            menu = pyzo.main.menuBar().findChild(RunMenu)
-            if menu:
-                menu._runFile((False, False), item.editor)
+            pyzo.runCommands.run_file((False, False), item.editor)
         elif action == "run_script":
-            menu = pyzo.main.menuBar().findChild(RunMenu)
-            if menu:
-                menu._runFile((True, False), item.editor)
+            pyzo.runCommands.run_file((True, False), item.editor)
 
         pyzo.editors._tabs.updateItems()
 
@@ -1966,7 +1851,7 @@ class RunMenu(Menu):
                 "Run file as script ::: Save and run the current file as a script in a restarted shell.",
             ),
             icons.run_file_script,
-            self._runFile,
+            pyzo.runCommands.run_file,
             (True, False),
         )
         self.addItem(
@@ -1975,7 +1860,7 @@ class RunMenu(Menu):
                 "Run main file as script ::: Save and run the main file as a script in a restarted shell.",
             ),
             icons.run_mainfile_script,
-            self._runFile,
+            pyzo.runCommands.run_file,
             (True, True),
         )
 
@@ -1987,7 +1872,7 @@ class RunMenu(Menu):
                 "Execute selection ::: Execute the current editor's selected lines, selected words on the current line, or current line if there is no selection.",
             ),
             icons.run_lines,
-            self._runSelected,
+            pyzo.runCommands.run_selected,
         )
         self.addItem(
             translate(
@@ -1995,7 +1880,7 @@ class RunMenu(Menu):
                 "Execute line and print result ::: Execute the whole line at the cursor position in the editor, and print the result.",
             ),
             icons.run_line,
-            self._runCurrentLineAndPrintResult,
+            pyzo.runCommands.run_current_line_and_print_result,
         )
         self.addItem(
             translate(
@@ -2003,7 +1888,7 @@ class RunMenu(Menu):
                 "Execute cell ::: Execute the current editors's cell in the current shell.",
             ),
             icons.run_cell,
-            self._runCell,
+            pyzo.runCommands.run_cell,
         )
 
         # In the _runFile calls, the parameter specifies (asScript, mainFile)
@@ -2013,7 +1898,7 @@ class RunMenu(Menu):
                 "Execute file ::: Execute the current file in the current shell.",
             ),
             icons.run_file,
-            self._runFile,
+            pyzo.runCommands.run_file,
             (False, False),
         )
         self.addItem(
@@ -2022,7 +1907,7 @@ class RunMenu(Menu):
                 "Execute main file ::: Execute the main file in the current shell.",
             ),
             icons.run_mainfile,
-            self._runFile,
+            pyzo.runCommands.run_file,
             (False, True),
         )
 
@@ -2031,7 +1916,7 @@ class RunMenu(Menu):
         self.addItem(
             translate("menu", "Execute selection and advance"),
             icons.run_lines,
-            self._runSelectedAdvance,
+            pyzo.runCommands.run_selected_advance,
         )
         self.addItem(
             translate(
@@ -2039,7 +1924,7 @@ class RunMenu(Menu):
                 "Execute cell and advance ::: Execute the current editors's cell and advance to the next cell.",
             ),
             icons.run_cell,
-            self._runCellAdvance,
+            pyzo.runCommands.run_cell_advance,
         )
 
         self.addSeparator()
@@ -2079,288 +1964,6 @@ class RunMenu(Menu):
 
         w = PyzoWizard(self)
         w.show("RuncodeWizardPage1")  # Start wizard at page about running code
-
-    def _getShellAndEditor(self, what, mainEditor=False):
-        """Get the shell and editor. Shows a warning dialog when one of
-        these is not available.
-        """
-        # Init empty error message
-        msg = ""
-        # Get shell
-        shell = pyzo.shells.getExecutionShell()
-        if shell is None:
-            msg += translate("menu", "No shell to run code in.").rstrip() + " "
-            # shell = pyzo.shells.addShell()  # issue #335, does not work, somehow
-        # Get editor
-        if mainEditor:
-            editor = pyzo.editors.getMainEditor()
-            if editor is None:
-                msg += translate("menu", "There is no main file selected.")
-        else:
-            editor = pyzo.editors.getCurrentEditor()
-            if editor is None:
-                msg += translate("menu", "No editor selected.")
-        # Show error dialog
-        if msg:
-            m = QtWidgets.QMessageBox(self)
-            m.setWindowTitle(translate("menu dialog", "Could not run"))
-            m.setText(translate("menu", "Could not run " + what + ":\n\n" + msg))
-            m.setIcon(m.Icon.Warning)
-            m.exec()
-        # Return
-        return shell, editor
-
-    def _advance(self, runCursor):
-        # Get editor and shell
-        shell, editor = self._getShellAndEditor("selection")
-        if not shell or not editor:
-            return
-
-        cursor = editor.textCursor()
-        cursor.setPosition(runCursor.position())
-        cursor.movePosition(cursor.MoveOperation.NextBlock)
-        editor.setTextCursor(cursor)
-
-    def _runSelectedAdvance(self):
-        self._runSelected(advance=True)
-
-    def _runCurrentLineAndPrintResult(self):
-        self._runSelected(runCurrentLineAndPrintResult=True)
-
-    def _runSelected(self, advance=False, runCurrentLineAndPrintResult=False):
-        """Run the selected whole lines in the current shell.
-
-        runCurrentLineAndPrintResult
-            similar to selecting the whole single line and executing it, but the result
-            is always printed, not only for expressions
-
-            Printing the result for non-expressions is done by extracting the result:
-                The line "x = 4 + 6" will be executed as "x = 4 + 6; x" which then
-                prints the result. This also works for lines such as:
-                "(a, b), = [(3 + 4, 5)]" --> "(a, b), = [(3 + 4, 5)]; (a, b)"
-                "x = 3  # comment" --> "x = 3; x"
-
-            And the command is added to the history.
-        """
-        # Get editor and shell
-        shell, editor = self._getShellAndEditor("selection")
-        if not shell or not editor:
-            return
-
-        # Get position to sample between (only sample whole lines)
-        screenCursor = editor.textCursor()  # Current selection in the editor
-        runCursor = editor.textCursor()  # The part that should be run
-
-        runCursor.setPosition(screenCursor.selectionStart())
-        runCursor.movePosition(
-            runCursor.MoveOperation.StartOfBlock
-        )  # This also moves the anchor
-        lineNumber1 = runCursor.blockNumber()
-
-        runCursor.setPosition(
-            screenCursor.selectionEnd(), runCursor.MoveMode.KeepAnchor
-        )
-        if not (screenCursor.hasSelection() and runCursor.atBlockStart()):
-            # If the end of the selection is at the beginning of a block, don't extend it
-            runCursor.movePosition(
-                runCursor.MoveOperation.EndOfBlock, runCursor.MoveMode.KeepAnchor
-            )
-        lineNumber2 = runCursor.blockNumber()
-
-        # Does this look like a statement?
-        isStatement = lineNumber1 == lineNumber2 and screenCursor.hasSelection()
-
-        if isStatement or runCurrentLineAndPrintResult:
-            selectedText = screenCursor.selectedText()
-            if runCurrentLineAndPrintResult:
-                if lineNumber1 != lineNumber2:
-                    return
-                selectedText = runCursor.selectedText()
-                if editor.parser().name().startswith("python"):
-                    tokens = runCursor.block().userData().tokens
-                    if len(tokens) > 0:
-                        if isinstance(tokens[-1], Tokens.CommentToken):
-                            tokens = tokens[:-1]
-                        leftResult = findLeftResultInTokens(tokens)
-                        selectedText = "".join(str(t) for t in tokens).strip()
-                        if leftResult is not None:
-                            selectedText += "; " + leftResult
-
-            # Get source code of statement
-            code = selectedText.replace("\u2029", "\n").strip()
-            # add code to history
-            pyzo.command_history.append(code)
-            # Execute statement
-            shell.executeCommand(code + "\n")
-        else:
-            # Get source code
-            code = runCursor.selectedText().replace("\u2029", "\n")
-            # Notify user of what we execute
-            self._showWhatToExecute(editor, runCursor)
-            # Get filename and run code
-            fname = editor.id()  # editor._name or editor._filename
-            shell.executeCode(code, fname, lineNumber1)
-
-        if advance:
-            self._advance(runCursor)
-
-    def _runCellAdvance(self):
-        self._runCell(advance=True)
-
-    def _runCell(self, advance=False):
-        """Run the code between two cell separators ('##' or '# %%')."""
-        # Get editor and shell
-        shell, editor = self._getShellAndEditor("cell")
-        if not shell or not editor:
-            return
-
-        cellName = ""
-
-        if editor.parser().name().startswith("python"):
-
-            def isCursorAtCellComment(cur):
-                # there could be a whitespace token before the cell token
-                for t in cur.block().userData().tokens[:2]:
-                    if isinstance(t, CellCommentToken):
-                        return True
-                return False
-
-        else:
-            # use this as a fallback if no Python syntax highlighter parser is selected
-            # This fallback is dumber: lines starting with "##" in a multiline string literal
-            # will be misinterpreted as cell comments.
-            def isCursorAtCellComment(cur):
-                line = cur.block().text().lstrip()
-                return line.startswith(("##", "#%%", "# %%"))
-
-        # Get current cell
-        # Move up until the start of document
-        # or right after a line starting with '##'
-        runCursor = editor.textCursor()  # The part that should be run
-        runCursor.movePosition(runCursor.MoveOperation.StartOfBlock)
-        while True:
-            if isCursorAtCellComment(runCursor):
-                # ## line, move to the line following this one
-                if not runCursor.block().next().isValid():
-                    # The user tried to execute the last line of a file which
-                    # started with ##. Do nothing
-                    return
-                line = runCursor.block().text().lstrip()
-                runCursor.movePosition(runCursor.MoveOperation.NextBlock)
-                cellName = line.lstrip("#% ").strip()
-                break
-            if not runCursor.block().previous().isValid():
-                break  # Start of document
-            runCursor.movePosition(runCursor.MoveOperation.PreviousBlock)
-
-        # This is the line number of the start
-        lineNumber = runCursor.blockNumber()
-        if len(cellName) > 20:
-            cellName = cellName[:17] + "..."
-
-        # Move down until a line before one starting with'##'
-        # or to end of document
-        while True:
-            if isCursorAtCellComment(runCursor):
-                # This line starts with ##, move to the end of the previous one
-                runCursor.movePosition(
-                    runCursor.MoveOperation.Left, runCursor.MoveMode.KeepAnchor
-                )
-                break
-            if not runCursor.block().next().isValid():
-                # Last block of the document, move to the end of the line
-                runCursor.movePosition(
-                    runCursor.MoveOperation.EndOfBlock,
-                    runCursor.MoveMode.KeepAnchor,
-                )
-                break
-            runCursor.movePosition(
-                runCursor.MoveOperation.NextBlock,
-                runCursor.MoveMode.KeepAnchor,
-            )
-
-        # Get source code
-        code = runCursor.selectedText().replace("\u2029", "\n")
-        # Notify user of what we execute
-        self._showWhatToExecute(editor, runCursor)
-        # Get filename and run code
-        fname = editor.id()  # editor._name or editor._filename
-        shell.executeCode(
-            code, fname, lineNumber, cellName or " "
-        )  # ensure that bool(cellName) == True
-
-        if advance:
-            self._advance(runCursor)
-
-    def _showWhatToExecute(self, editor, runCursor=None):
-        # Get runCursor for whole document if not given
-        if runCursor is None:
-            runCursor = editor.textCursor()
-            runCursor.movePosition(runCursor.MoveOperation.Start)
-            runCursor.movePosition(
-                runCursor.MoveOperation.End, runCursor.MoveMode.KeepAnchor
-            )
-
-        editor.showRunCursor(runCursor)
-
-    def _getCodeOfFile(self, editor):
-        # Obtain source code
-        text = editor.toPlainText()
-        # Show what we execute
-        self._showWhatToExecute(editor)
-        # Get filename and return
-        fname = editor.id()  # editor._name or editor._filename
-        return fname, text
-
-    def _runFile(self, runMode, givenEditor=None):
-        """Run a file
-        runMode is a tuple (asScript, mainFile)
-        """
-        asScript, mainFile = runMode
-
-        # Get editor and shell
-        description = "main file" if mainFile else "file"
-        if asScript:
-            description += translate("menu", " (as script)")
-
-        shell, editor = self._getShellAndEditor(description, mainFile)
-        if givenEditor:
-            editor = givenEditor
-        if not shell or not editor:
-            return
-
-        if asScript:
-            # Go
-            self._runScript(editor, shell)
-        else:
-            # Obtain source code and fname
-            fname, text = self._getCodeOfFile(editor)
-            shell.executeCode(
-                text, fname, changeDir=pyzo.config.settings.changeDirOnFileExec
-            )
-
-    def _runScript(self, editor, shell):
-        saveOk = pyzo.editors.saveFile(editor)
-        # We also check if the document is not modified after saving just in case the
-        # file was modified outside Pyzo and the user then decided to cancel saving when asked.
-        if saveOk and not editor.document().isModified():
-            self._showWhatToExecute(editor)
-            if shell._startup_info.get("ipython", "") == "yes":
-                # If we have an ipython shell we use %run -i instead
-                # This works better when python autoreload is used
-                d = os.path.normpath(
-                    os.path.normcase(os.path.dirname(editor._filename))
-                )
-                shell._ctrl_command.send('%cd "{}"\n'.format(d))
-                shell._ctrl_command.send('%run -i "{}"\n'.format(editor._filename))
-            else:
-                shell.restart(editor._filename)
-        else:
-            m = QtWidgets.QMessageBox(self)
-            m.setWindowTitle(translate("menu dialog", "Could not run script."))
-            m.setText(translate("menu", "Could not save the file."))
-            m.setIcon(m.Icon.Warning)
-            m.exec()
 
 
 class ToolsMenu(Menu):

@@ -394,6 +394,7 @@ pyzo.status = None  # The statusbar (or None)
 pyzo.commands = None  # Application-owned commands (peer-frame mode for now)
 pyzo.shellCommands = None  # Application-owned shell command behavior
 pyzo.shellCommandProjector = None  # Menu/toolbar action projections
+pyzo.runCommands = None  # Application-owned editor execution behavior
 
 # Get directories of interest
 pyzo.appDataDir, pyzo.appConfigDir = paths.prepare_appdata_appconfig_dirs()
