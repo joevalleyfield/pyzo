@@ -769,6 +769,10 @@ class MainWindow(_ApplicationHostBase):
                 PaneKind,
                 WorkspaceModel,
             )
+            from spikes.peer_frames.identity import IdentityKind, new_identity
+            from spikes.peer_frames.workspace_coordinator import (
+                WorkspaceCoordinator,
+            )
             from spikes.peer_frames.qtads_backend import QtAdsPeerFrameBackend
             from spikes.peer_frames.qtads_commands import QtAdsCommandProjector
             from spikes.peer_frames.qtads_status import QtAdsStatusProjector
@@ -804,7 +808,17 @@ class MainWindow(_ApplicationHostBase):
             self._PeerPaneKind = PaneKind
             self._PeerShellState = ShellState
             self._peerBackend = QtAdsPeerFrameBackend()
-            self._peerWorkspace = WorkspaceModel(self._peerBackend)
+            self._peerWorkspaceIdentity = new_identity(IdentityKind.WORKSPACE)
+            self._peerWorkspace = WorkspaceModel(
+                self._peerBackend,
+                workspace_id=self._peerWorkspaceIdentity,
+            )
+            self._peerWorkspaces = WorkspaceCoordinator()
+            self._peerWorkspaces.add_workspace(
+                self._peerWorkspace,
+                identity=self._peerWorkspaceIdentity,
+                name="Default",
+            )
             self._peerBackend.bind_model(
                 self._peerWorkspace,
                 self._requestPeerFrameClose,
@@ -845,7 +859,7 @@ class MainWindow(_ApplicationHostBase):
                 self._peerStatusState, self._dockManager
             )
             pyzo.commands = CommandRegistry(
-                self._peerWorkspace.resolve_active_context
+                self._peerWorkspaces.resolve_active_context
             )
             pyzo.commands.register(
                 CommandDescriptor(
@@ -1012,6 +1026,7 @@ class MainWindow(_ApplicationHostBase):
                 tools=self._toolWorkspace,
                 metadata=pyzo.metadata,
                 panes=self._paneLifecycle,
+                workspace_coordinator=self._peerWorkspaces,
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -1077,7 +1092,13 @@ class MainWindow(_ApplicationHostBase):
                     self._peerWorkspace.serialize_layout()
                 )
                 assert pyzo.application.active_peer.context() == (
-                    self._peerWorkspace.resolve_active_context()
+                    self._peerWorkspaces.resolve_active_context()
+                )
+                assert pyzo.application.workspaces.identities == (
+                    self._peerWorkspaceIdentity,
+                )
+                assert pyzo.application.workspaces.active_identity == (
+                    self._peerWorkspaceIdentity
                 )
                 assert pyzo.application.active_peer.window() is not None
                 assert pyzo.application.status.service is self._peerStatusService
@@ -3035,8 +3056,9 @@ class MainWindow(_ApplicationHostBase):
 
     def _registerPeerDock(self, pane_id, pane_kind, title, dock):
         self._peerBackend.register_dock(pane_id, dock)
-        result = self._peerWorkspace.register_pane(
-            self._PeerPaneDescriptor(pane_id, pane_kind, title)
+        result = self._peerWorkspaces.register_pane(
+            self._peerWorkspaceIdentity,
+            self._PeerPaneDescriptor(pane_id, pane_kind, title),
         )
         if not result.applied:
             raise RuntimeError(result.detail)

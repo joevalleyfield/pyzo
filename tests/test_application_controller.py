@@ -19,9 +19,25 @@ class Workspace:
         return {"schema": 2, "frames": []}
 
 
+class WorkspaceCoordinator:
+    workspace_ids = ("workspace-a", "workspace-b")
+    active_workspace_id = "workspace-a"
+
+    def __init__(self, workspace):
+        self._workspace = workspace
+
+    def resolve_active_context(self):
+        return self._workspace.resolve_active_context()
+
+    def model(self, workspace_id):
+        assert workspace_id == "workspace-a"
+        return self._workspace
+
+
 def test_peer_application_controller_is_a_non_window_service_boundary():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     workspace = Workspace()
+    workspaces = WorkspaceCoordinator(workspace)
     status = object()
     frame = object()
     execution_shell = object()
@@ -66,6 +82,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         tools=tools,
         metadata=metadata,
         panes=panes,
+        workspace_coordinator=workspaces,
     )
 
     assert isinstance(controller, QtCore.QObject)
@@ -73,6 +90,10 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.parent() is app
     assert controller.workspace.model is workspace
     assert controller.workspace.snapshot() == {"schema": 2, "frames": []}
+    assert controller.workspaces.identities == ("workspace-a", "workspace-b")
+    assert controller.workspaces.active_identity == "workspace-a"
+    assert controller.workspaces.context().frame_id == "frame-a"
+    assert controller.workspaces.model("workspace-a") is workspace
     assert controller.active_peer.context().frame_id == "frame-a"
     assert controller.active_peer.frame_id() == "frame-a"
     assert controller.active_peer.window() is frame

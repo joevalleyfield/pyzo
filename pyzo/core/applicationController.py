@@ -22,6 +22,27 @@ class WorkspaceAccess:
         return self._workspace.serialize_layout()
 
 
+class WorkspaceCollectionAccess:
+    """Expose concurrent workspace identity without leaking mutable registries."""
+
+    def __init__(self, coordinator):
+        self._coordinator = coordinator
+
+    @property
+    def identities(self):
+        return self._coordinator.workspace_ids
+
+    @property
+    def active_identity(self):
+        return self._coordinator.active_workspace_id
+
+    def context(self):
+        return self._coordinator.resolve_active_context()
+
+    def model(self, workspace_id):
+        return self._coordinator.model(workspace_id)
+
+
 class ActivePeerLookup:
     """Resolve application context and its ordinary peer window at call time."""
 
@@ -224,10 +245,17 @@ class PeerApplicationController(QtCore.QObject):
         tools,
         metadata,
         panes,
+        workspace_coordinator=None,
     ):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
-        self.active_peer = ActivePeerLookup(workspace, frame_window)
+        self.workspaces = (
+            WorkspaceCollectionAccess(workspace_coordinator)
+            if workspace_coordinator is not None
+            else None
+        )
+        context_owner = workspace_coordinator or workspace
+        self.active_peer = ActivePeerLookup(context_owner, frame_window)
         self.dialogs = DialogParentAccess(self.active_peer)
         self.status = StatusAccess(status_service)
         self.shell_commands = shell_commands
