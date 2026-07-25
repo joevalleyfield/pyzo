@@ -14,6 +14,7 @@ import gc
 import tempfile
 import traceback
 import weakref
+from copy import deepcopy
 from queue import Queue, Empty
 
 import pyzo
@@ -504,6 +505,16 @@ class _PyzoEditorDocumentLifecycle:
         )
 
 
+class _PeerWorkspacePersistenceFacade:
+    """Expose only the ordinary-save operation to application config code."""
+
+    def __init__(self, main_window):
+        self._mainWindow = main_window
+
+    def save(self):
+        return self._mainWindow._savePeerWorkspacePersistence()
+
+
 class _PyzoShellLifecycle:
     """Adapt one Pyzo interpreter shell to application lifecycle ownership."""
 
@@ -807,6 +818,10 @@ class MainWindow(_ApplicationHostBase):
             )
             from spikes.peer_frames.status import StatusState
             from spikes.peer_frames.workspace_session import WorkspaceSessionService
+            from spikes.peer_frames.workspace_persistence import (
+                WorkspacePersistenceState,
+                WorkspacePersistenceStore,
+            )
 
             self._PeerDirection = Direction
             self._PeerCloseDecision = CloseDecision
@@ -818,9 +833,63 @@ class MainWindow(_ApplicationHostBase):
             self._PeerApplicationIdentity = ApplicationIdentity
             self._PeerIdentityKind = IdentityKind
             self._PeerNewIdentity = new_identity
+            self._WorkspacePersistenceState = WorkspacePersistenceState
+            self._peerWorkspaceStore = WorkspacePersistenceStore(
+                os.environ.get("PYZO_WORKSPACE_DIR")
+                or os.path.join(pyzo.appDataDir, "workspaces")
+            )
+            self._peerWorkspacePersistenceLoad = self._peerWorkspaceStore.load()
+            self._peerWorkspacePersistenceBlocked = any(
+                issue.kind in {"process", "resources", "application"}
+                for issue in self._peerWorkspacePersistenceLoad.issues
+            )
+            persisted_workspace_id = (
+                self._peerWorkspacePersistenceLoad.state.active_workspace_id
+                or next(
+                    (
+                        identity
+                        for identity in self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
+                        if identity
+                        in self._peerWorkspacePersistenceLoad.state.workspaces
+                    ),
+                    None,
+                )
+                or next(
+                    iter(self._peerWorkspacePersistenceLoad.state.workspaces),
+                    None,
+                )
+            )
+            if persisted_workspace_id is None:
+                candidate_identity = new_identity(IdentityKind.WORKSPACE)
+                if (
+                    (
+                        "--test" not in sys.argv
+                        or os.environ.get("PYZO_TEST_WORKSPACE_PERSISTENCE")
+                        == "1"
+                    )
+                    and not self._peerWorkspacePersistenceBlocked
+                ):
+                    try:
+                        migration = self._peerWorkspaceStore.migrate_legacy(
+                            self._peerLegacyWorkspacePayload(),
+                            default_workspace_id=str(candidate_identity),
+                        )
+                        self._peerWorkspacePersistenceLoad = migration.load
+                        persisted_workspace_id = str(candidate_identity)
+                    except Exception as error:
+                        self._peerWorkspacePersistenceBlocked = True
+                        print(
+                            "Could not migrate peer workspace persistence: "
+                            + str(error),
+                            file=sys.stderr,
+                        )
+            if persisted_workspace_id is not None:
+                candidate_identity = ApplicationIdentity(
+                    IdentityKind.WORKSPACE, persisted_workspace_id
+                )
             self._PeerDocumentViewState = DocumentViewState
             self._peerBackend = QtAdsPeerFrameBackend()
-            self._peerWorkspaceIdentity = new_identity(IdentityKind.WORKSPACE)
+            self._peerWorkspaceIdentity = candidate_identity
             self._peerWorkspace = WorkspaceModel(
                 self._peerBackend,
                 workspace_id=self._peerWorkspaceIdentity,
@@ -838,6 +907,11 @@ class MainWindow(_ApplicationHostBase):
             )
             self._peerDocumentViews = DocumentViewRegistry()
             self._peerDocumentResources = DocumentResourceRegistry()
+            self._peerPersistedDocumentResources = deepcopy(
+                dict(
+                    self._peerWorkspacePersistenceLoad.state.shared_resources
+                )
+            )
             self._peerShellLifecycles = ShellLifecycleRegistry()
             self._peerEditorLifecycleMigration = False
             self._peerDirtyCloseChooser = self._choosePeerDirtyClose
@@ -1050,11 +1124,28 @@ class MainWindow(_ApplicationHostBase):
                 pyzo.toolManager.getLoadedTools,
                 self.restoreTools,
             )
+            pyzo.workspacePersistence = _PeerWorkspacePersistenceFacade(self)
         else:
             pyzo.application = None
             pyzo.workspaceSession = None
+            pyzo.workspacePersistence = None
             self.setStatusBar(StatusBar())
         self.statusBar().setVisible(pyzo.config.view.showStatusbar)
+        if self._peerFrameMode and self._peerWorkspacePersistenceLoad.issues:
+            unavailable = self._peerWorkspacePersistenceLoad.unavailable_workspace_ids
+            detail = (
+                "Workspace persistence needs attention"
+                if not unavailable
+                else "Unavailable workspaces: " + ", ".join(unavailable)
+            )
+            self.statusBar().showMessage(detail)
+            for issue in self._peerWorkspacePersistenceLoad.issues:
+                print(
+                    "workspace persistence issue "
+                    f"({issue.kind}, {issue.identity or 'process'}): "
+                    f"{issue.detail}",
+                    file=sys.stderr,
+                )
         pyzo.metadata.cursor(pyzo.editors.getCurrentEditor())
 
         # Create menu
@@ -1259,12 +1350,139 @@ class MainWindow(_ApplicationHostBase):
             self._installPeerApplicationLifecycle()
 
     def _restorePeerWorkspaceSession(self):
-        snapshot = pyzo.config.state.get("peerWorkspaceSession", None)
+        workspace_record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+            str(self._peerWorkspaceIdentity), {}
+        )
+        snapshot = workspace_record.get("session")
+        if not snapshot:
+            snapshot = pyzo.config.state.get("peerWorkspaceSession", None)
         if not snapshot:
             return
         result = pyzo.workspaceSession.restore(snapshot)
         if not result.applied:
             print("Could not restore peer workspace session: " + result.detail)
+
+    @classmethod
+    def _peerJsonValue(cls, value):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, bytes):
+            return {
+                "__type__": "bytes",
+                "base64": base64.b64encode(value).decode("ascii"),
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._peerJsonValue(item) for item in value]
+        if hasattr(value, "keys"):
+            return {
+                str(key): cls._peerJsonValue(value[key])
+                for key in value.keys()
+            }
+        raise TypeError(
+            "unsupported legacy config value: " + type(value).__name__
+        )
+
+    def _peerLegacyWorkspacePayload(self):
+        """Capture legacy state losslessly without assigning named-view identity."""
+
+        return self._peerJsonValue(pyzo.config)
+
+    def _savePeerWorkspacePersistence(self):
+        if self._peerWorkspacePersistenceBlocked:
+            raise RuntimeError(
+                "workspace persistence is unavailable; retry restore before saving"
+            )
+        loaded = self._peerWorkspaceStore.load()
+        if any(
+            issue.kind in {"process", "resources", "application"}
+            for issue in loaded.issues
+        ):
+            self._peerWorkspacePersistenceBlocked = True
+            raise RuntimeError(
+                "workspace process persistence is unavailable"
+            )
+        workspace_id = str(self._peerWorkspaceIdentity)
+        workspaces = deepcopy(dict(loaded.state.workspaces))
+        previous = deepcopy(dict(workspaces.get(workspace_id, {})))
+        previous.update(
+            {
+                "schema": 1,
+                "identity": workspace_id,
+                "name": previous.get("name", "Default"),
+                "session": pyzo.workspaceSession.capture(),
+                "profile": deepcopy(previous.get("profile", {})),
+                "extensions": deepcopy(previous.get("extensions", {})),
+            }
+        )
+        workspaces[workspace_id] = previous
+        loaded_ids = loaded.state.loaded_workspace_ids
+        if workspace_id not in loaded_ids:
+            loaded_ids = (*loaded_ids, workspace_id)
+
+        recovery = deepcopy(dict(loaded.state.recovery))
+        recovery_snapshots = []
+        compatibility_recovery = self._peerRecoveryStore.load()
+        for snapshot in compatibility_recovery.snapshots:
+            affinity = snapshot.workspace_affinity or workspace_id
+            if affinity == workspace_id:
+                recovery_snapshots.append(deepcopy(snapshot.__dict__))
+        recovery[workspace_id] = {
+            "schema": 1,
+            "workspace_id": workspace_id,
+            "snapshots": recovery_snapshots,
+        }
+        resources = self._mergePeerResourcePersistence(
+            loaded.state.shared_resources,
+            self._peerDocumentResources.persistence_snapshot(),
+        )
+        state = self._WorkspacePersistenceState(
+            tuple(loaded_ids),
+            workspace_id,
+            workspaces,
+            resources,
+            recovery,
+            loaded.state.application_state,
+        )
+        committed = self._peerWorkspaceStore.commit(state)
+        self._peerWorkspacePersistenceLoad = committed
+        self._peerPersistedDocumentResources = deepcopy(
+            dict(committed.state.shared_resources)
+        )
+        return committed
+
+    def _mergePeerResourcePersistence(self, previous, current):
+        """Replace only this workspace's views/main while retaining shared peers."""
+
+        workspace_id = str(self._peerWorkspaceIdentity)
+        merged = deepcopy(dict(previous)) if previous else {"schema": 1}
+        merged["schema"] = 1
+        documents = deepcopy(dict(merged.get("documents", {})))
+        documents.update(deepcopy(dict(current.get("documents", {}))))
+        views = {
+            identity: deepcopy(value)
+            for identity, value in dict(merged.get("views", {})).items()
+            if not (
+                isinstance(value, dict)
+                and value.get("workspace_id") == workspace_id
+            )
+        }
+        views.update(deepcopy(dict(current.get("views", {}))))
+        mains = deepcopy(dict(merged.get("mains", {})))
+        mains.pop(workspace_id, None)
+        mains.update(deepcopy(dict(current.get("mains", {}))))
+        merged.update(
+            {
+                "documents": documents,
+                "views": views,
+                "mains": mains,
+                "extensions": deepcopy(
+                    current.get(
+                        "extensions", merged.get("extensions", {})
+                    )
+                ),
+            }
+        )
+        return merged
 
     def _onFocusedDockWidgetChanged(self, dock_widget):
         # Focus selects command/service context. It does not bind an editor to
@@ -1450,6 +1668,50 @@ class MainWindow(_ApplicationHostBase):
                 )
             self._bindPeerEditorLifecycle(host)
 
+    def _persistedPeerDocumentIdentity(self, item):
+        documents = self._peerPersistedDocumentResources.get("documents", {})
+        if not isinstance(documents, dict):
+            return None
+        recovery_id = getattr(item.editor, "_peerRecoveryId", None)
+        if isinstance(recovery_id, str) and recovery_id in documents:
+            return self._PeerApplicationIdentity(
+                self._PeerIdentityKind.DOCUMENT, recovery_id
+            )
+        if not item.filename:
+            return None
+        expected = os.path.normcase(os.path.abspath(item.filename))
+        for identity, record in documents.items():
+            if not isinstance(identity, str) or not isinstance(record, dict):
+                continue
+            path = record.get("path")
+            if (
+                isinstance(path, str)
+                and os.path.normcase(os.path.abspath(path)) == expected
+            ):
+                return self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.DOCUMENT, identity
+                )
+        return None
+
+    def _persistedPeerViewIdentity(self, document_id):
+        views = self._peerPersistedDocumentResources.get("views", {})
+        if not isinstance(views, dict):
+            return None
+        for identity, record in views.items():
+            if (
+                isinstance(identity, str)
+                and isinstance(record, dict)
+                and record.get("document_id") == str(document_id)
+                and record.get("workspace_id")
+                == str(self._peerWorkspaceIdentity)
+            ):
+                candidate = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.VIEW, identity
+                )
+                if candidate not in self._peerDocumentResources.view_ids:
+                    return candidate
+        return None
+
     def _bindPeerEditorLifecycle(self, host):
         if self._peerEditorLifecycleMigration:
             return
@@ -1468,7 +1730,10 @@ class MainWindow(_ApplicationHostBase):
                     self._PeerIdentityKind.DOCUMENT, recovery_id
                 )
                 if recovery_id
-                else self._PeerNewIdentity(self._PeerIdentityKind.DOCUMENT)
+                else (
+                    self._persistedPeerDocumentIdentity(item)
+                    or self._PeerNewIdentity(self._PeerIdentityKind.DOCUMENT)
+                )
             )
             item.editor._peerDocumentIdentity = document_id
         bound_document_id = self._peerDocumentViews.document_id_for_view(pane_id)
@@ -1488,7 +1753,10 @@ class MainWindow(_ApplicationHostBase):
             )
         view_id = getattr(item.editor, "_peerViewIdentity", None)
         if view_id is None:
-            view_id = self._PeerNewIdentity(self._PeerIdentityKind.VIEW)
+            view_id = (
+                self._persistedPeerViewIdentity(document_id)
+                or self._PeerNewIdentity(self._PeerIdentityKind.VIEW)
+            )
             item.editor._peerViewIdentity = view_id
         if view_id not in self._peerDocumentResources.view_ids:
             cursor = item.editor.textCursor()
@@ -1506,6 +1774,15 @@ class MainWindow(_ApplicationHostBase):
                     focused=item.editor.hasFocus(),
                     pinned=item.pinned,
                 ),
+            )
+        mains = self._peerPersistedDocumentResources.get("mains", {})
+        if (
+            isinstance(mains, dict)
+            and mains.get(str(self._peerWorkspaceIdentity)) == str(document_id)
+            and item.filename
+        ):
+            self._peerDocumentResources.set_main(
+                self._peerWorkspaceIdentity, document_id
             )
         lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item)
         policy = self._peerDocumentViews.register_view(
@@ -1902,7 +2179,8 @@ class MainWindow(_ApplicationHostBase):
         editor = item.editor
         recovery_id = getattr(editor, "_peerRecoveryId", None)
         if recovery_id is None:
-            recovery_id = (
+            document_id = getattr(editor, "_peerDocumentIdentity", None)
+            recovery_id = str(document_id) if document_id is not None else (
                 self._peerNamedDocumentId(item.filename)
                 if item.filename
                 else self._peerNewUntitledDocumentId()
@@ -1928,6 +2206,7 @@ class MainWindow(_ApplicationHostBase):
                 "_peerRecoveryDiskSignature",
                 self._peerFileSignature(item.filename or None),
             ),
+            workspace_affinity=str(self._peerWorkspaceIdentity),
         )
 
     def _restorePeerRecoverySession(self):
@@ -1946,12 +2225,17 @@ class MainWindow(_ApplicationHostBase):
                     item.editor._name = snapshot.display_name
 
             editor = item.editor
+            external_text = (
+                editor.toPlainText()
+                if snapshot.filename and os.path.isfile(snapshot.filename)
+                else None
+            )
             current_signature = self._peerFileSignature(snapshot.filename)
             conflict = bool(
                 snapshot.filename
                 and (
                     current_signature == "missing"
-                    or current_signature != snapshot.disk_signature
+                    or external_text != snapshot.text
                 )
             )
             editor.setPlainText(snapshot.text)

@@ -213,10 +213,15 @@ def saveConfig():
     # Save either the application-owned peer session or the legacy window.
     if pyzo.viewManager.isNormalViewActive():
         if pyzo.workspaceSession is not None:
-            if "--test" not in sys.argv:
+            if (
+                "--test" not in sys.argv
+                or os.environ.get("PYZO_TEST_WORKSPACE_PERSISTENCE") == "1"
+            ):
                 pyzo.config.state.peerWorkspaceSession = (
                     pyzo.workspaceSession.capture()
                 )
+                if pyzo.workspacePersistence is not None:
+                    pyzo.workspacePersistence.save()
         elif pyzo.main:
             pyzo.main.saveWindowState()
 
@@ -374,6 +379,12 @@ def start():
                         lambda _pane_id, _lifecycle: "terminate"
                     )
                 if pyzo.application is not None:
+                    if (
+                        os.environ.get("PYZO_TEST_WORKSPACE_PERSISTENCE")
+                        == "1"
+                        and pyzo.workspacePersistence is not None
+                    ):
+                        pyzo.workspacePersistence.save()
                     pyzo.application.lifecycle.quit()
                 else:
                     host.quit()
@@ -404,6 +415,7 @@ pyzo.shellCommandProjector = None  # Menu/toolbar action projections
 pyzo.runCommands = None  # Application-owned editor execution behavior
 pyzo.menuProjector = None  # Complete application menus projected into peer chrome
 pyzo.workspaceSession = None  # Application-owned peer workspace persistence
+pyzo.workspacePersistence = None  # Versioned process/workspace generation owner
 pyzo.metadata = None  # Application-owned document/shell/status metadata projection
 
 # Get directories of interest
