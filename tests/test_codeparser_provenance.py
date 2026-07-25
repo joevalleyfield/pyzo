@@ -108,3 +108,37 @@ def test_legacy_parser_keeps_mutable_editor_id_compatibility():
             del pyzo.application
         else:
             pyzo.application = previous
+
+
+def test_source_structure_accepts_current_durable_parser_result():
+    from pyzo.util._locale import translate
+
+    pyzo.translate = translate
+    from pyzo.tools.pyzoSourceStructure import PyzoSourceStructure
+
+    class ReachedStructureRendering(Exception):
+        pass
+
+    editor = Editor()
+    result = SimpleNamespace(
+        editorId="durable-document",
+        isMatch=lambda candidate: candidate is editor,
+    )
+    tool = SimpleNamespace(
+        _getCurEditorFromRef=lambda: editor,
+        _updateColors=lambda: (_ for _ in ()).throw(ReachedStructureRendering),
+    )
+    old_editors = getattr(pyzo, "editors", None)
+    old_parser = getattr(pyzo, "parser", None)
+    try:
+        pyzo.editors = SimpleNamespace(getCurrentEditor=lambda: editor)
+        pyzo.parser = SimpleNamespace(_getResult=lambda candidate: result)
+        try:
+            PyzoSourceStructure.updateStructure(tool)
+        except ReachedStructureRendering:
+            pass
+        else:
+            raise AssertionError("durable parser result was rejected")
+    finally:
+        pyzo.editors = old_editors
+        pyzo.parser = old_parser

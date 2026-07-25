@@ -674,7 +674,10 @@ class MainWindow(_ApplicationHostBase):
 
         if self._peerFrameMode:
             if "--test" not in sys.argv:
-                self._restoreLegacyEditorStateIntoPeerPanes()
+                if self._peerFactoryStartup:
+                    pyzo.editors.newFile()
+                else:
+                    self._restoreLegacyEditorStateIntoPeerPanes()
         else:
             # Restoring QMainWindow state twice is a legacy Qt workaround.
             self.restoreState()
@@ -858,6 +861,55 @@ class MainWindow(_ApplicationHostBase):
                     iter(self._peerWorkspacePersistenceLoad.state.workspaces),
                     None,
                 )
+            )
+            factory_startup = persisted_workspace_id is None
+            if persisted_workspace_id is not None:
+                workspace_record = (
+                    self._peerWorkspacePersistenceLoad.state.workspaces.get(
+                        persisted_workspace_id, {}
+                    )
+                )
+                extensions = (
+                    workspace_record.get("extensions", {})
+                    if isinstance(workspace_record, dict)
+                    else {}
+                )
+                session = (
+                    workspace_record.get("session", {})
+                    if isinstance(workspace_record, dict)
+                    else {}
+                )
+                layout = (
+                    session.get("layout", {})
+                    if isinstance(session, dict)
+                    else {}
+                )
+                has_nonempty_layout = bool(
+                    isinstance(layout, dict) and layout.get("frames")
+                )
+                views = self._peerWorkspacePersistenceLoad.state.shared_resources.get(
+                    "views", {}
+                )
+                has_workspace_views = any(
+                    isinstance(view, dict)
+                    and view.get("workspace_id") == persisted_workspace_id
+                    for view in (
+                        views.values() if isinstance(views, dict) else ()
+                    )
+                )
+                migration_pending = bool(
+                    self._peerWorkspacePersistenceLoad.state.application_state.get(
+                        "migration"
+                    )
+                    and not (
+                        isinstance(extensions, dict)
+                        and extensions.get("pyzo_peer_initialized") is True
+                    )
+                    and not has_workspace_views
+                )
+                factory_startup = migration_pending or not has_nonempty_layout
+            self._peerFactoryStartup = (
+                factory_startup and "--test" not in sys.argv
             )
             if persisted_workspace_id is None:
                 candidate_identity = new_identity(IdentityKind.WORKSPACE)
@@ -1182,6 +1234,23 @@ class MainWindow(_ApplicationHostBase):
             assert len(pyzo.editors.groups) == 2
             assert all(group._tabs.count() == 1 for group in pyzo.editors.groups)
             assert all(group._tabs.tabBar().isHidden() for group in pyzo.editors.groups)
+            if self._peerFrameMode:
+                first_host = pyzo.editors._group_for_editor(first_item.editor)
+                second_host = pyzo.editors._group_for_editor(second_item.editor)
+                first_pane = self._peerBackend._pane_id_from_dock(
+                    self._editorHosts[first_host]
+                )
+                second_pane = self._peerBackend._pane_id_from_dock(
+                    self._editorHosts[second_host]
+                )
+                editor_groups = [
+                    group
+                    for frame in self._peerWorkspace.serialize_layout()["frames"]
+                    for group in frame["groups"]
+                    if first_pane in group["panes"]
+                ]
+                assert len(editor_groups) == 1
+                assert second_pane in editor_groups[0]["panes"]
             print("Pyzo independent editor-dock smoke test passed")
             if self._peerFrameMode:
                 assert isinstance(pyzo.application, QtCore.QObject)
@@ -1339,7 +1408,10 @@ class MainWindow(_ApplicationHostBase):
                 print("Pyzo ADS dual-layer drop-guide paint smoke test passed")
             callLater(self._testIndependentShellDocks)
         # Load tools
-        if pyzo.config.state.newUser and not pyzo.config.state.loadedTools:
+        if self._peerFrameMode and self._peerFactoryStartup:
+            pyzo.toolManager.loadTool("pyzosourcestructure")
+            pyzo.toolManager.loadTool("pyzofilebrowser", "pyzosourcestructure")
+        elif pyzo.config.state.newUser and not pyzo.config.state.loadedTools:
             pyzo.toolManager.loadTool("pyzosourcestructure")
             pyzo.toolManager.loadTool("pyzofilebrowser", "pyzosourcestructure")
         elif pyzo.config.state.loadedTools:
@@ -1350,17 +1422,22 @@ class MainWindow(_ApplicationHostBase):
             self._installPeerApplicationLifecycle()
 
     def _restorePeerWorkspaceSession(self):
+        if self._peerFactoryStartup:
+            self._peerApplicationLifecycle.initialize_default_frame()
+            return
         workspace_record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
             str(self._peerWorkspaceIdentity), {}
         )
         snapshot = workspace_record.get("session")
         if not snapshot:
             snapshot = pyzo.config.state.get("peerWorkspaceSession", None)
-        if not snapshot:
-            return
-        result = pyzo.workspaceSession.restore(snapshot)
-        if not result.applied:
-            print("Could not restore peer workspace session: " + result.detail)
+        if snapshot:
+            result = pyzo.workspaceSession.restore(snapshot)
+            if result.applied and self._peerWorkspace.frames:
+                return
+            if not result.applied:
+                print("Could not restore peer workspace session: " + result.detail)
+        self._peerApplicationLifecycle.initialize_default_frame()
 
     @classmethod
     def _peerJsonValue(cls, value):
@@ -1404,6 +1481,8 @@ class MainWindow(_ApplicationHostBase):
         workspace_id = str(self._peerWorkspaceIdentity)
         workspaces = deepcopy(dict(loaded.state.workspaces))
         previous = deepcopy(dict(workspaces.get(workspace_id, {})))
+        extensions = deepcopy(previous.get("extensions", {}))
+        extensions["pyzo_peer_initialized"] = True
         previous.update(
             {
                 "schema": 1,
@@ -1411,7 +1490,7 @@ class MainWindow(_ApplicationHostBase):
                 "name": previous.get("name", "Default"),
                 "session": pyzo.workspaceSession.capture(),
                 "profile": deepcopy(previous.get("profile", {})),
-                "extensions": deepcopy(previous.get("extensions", {})),
+                "extensions": extensions,
             }
         )
         workspaces[workspace_id] = previous
@@ -1615,6 +1694,11 @@ class MainWindow(_ApplicationHostBase):
 
     def _createEditorHost(self):
         self._editorHostSerial += 1
+        target_dock = None
+        if self._peerFrameMode:
+            editor_service = getattr(pyzo, "editors", None)
+            active_host = getattr(editor_service, "activeGroup", None)
+            target_dock = self._editorHosts.get(active_host)
         dock = self._QtAds.CDockWidget(self._dockManager, "Untitled")
         dock.setObjectName(f"pyzo-editor-dock-{self._editorHostSerial}")
         host = self._EditorTabs(dock)
@@ -1627,6 +1711,19 @@ class MainWindow(_ApplicationHostBase):
                 "Untitled",
                 dock,
             )
+            if target_dock is not None:
+                pane_id = self._peerBackend._pane_id_from_dock(dock)
+                target_id = self._peerBackend._pane_id_from_dock(target_dock)
+                if (
+                    target_id in self._peerWorkspace.panes
+                    and self._peerWorkspace.is_pane_placed(target_id)
+                ):
+                    result = self._peerWorkspace.tab(pane_id, target_id)
+                    if not result.applied:
+                        self._logPeerDefaultFrameError(
+                            "new editor routing retained its temporary frame: "
+                            + result.detail
+                        )
         else:
             active = getattr(pyzo, "editors", None)
             active_group = getattr(active, "activeGroup", None)
@@ -1807,6 +1904,10 @@ class MainWindow(_ApplicationHostBase):
             item.editor.textChanged.connect(
                 lambda editor=item.editor: pyzo.application.documents.sync(editor)
             )
+        # Editor construction may enqueue a legacy-id parse before the peer
+        # document/view identity exists. Requeue now so tools consume the
+        # durable resource revision rather than waiting for the next edit.
+        pyzo.parser.parseThis(item.editor)
 
     def _requestPeerEditorClose(self, editor):
         host = pyzo.editors._group_for_editor(editor)
@@ -2396,6 +2497,9 @@ class MainWindow(_ApplicationHostBase):
             self._peerApplicationLifecycle.application_activated()
 
     def _createConfiguredPeerDefaultFrame(self):
+        if self._peerFactoryStartup:
+            self._createFactoryPeerDefaultFrame()
+            return
         configured_tools = tuple(pyzo.config.state.loadedTools or ())
         if not configured_tools:
             configured_tools = ("pyzosourcestructure", "pyzofilebrowser")
@@ -2403,17 +2507,26 @@ class MainWindow(_ApplicationHostBase):
 
     def _createFactoryPeerDefaultFrame(self):
         self._createPeerDefaultFrame(
-            ("pyzosourcestructure", "pyzofilebrowser")
+            ("pyzosourcestructure", "pyzofilebrowser"),
+            factory_layout=True,
         )
 
-    def _createPeerDefaultFrame(self, tool_ids):
-        pane_ids = []
+    def _createPeerDefaultFrame(self, tool_ids, *, factory_layout=False):
+        editor_pane_ids = []
+        shell_pane_ids = []
+        tool_pane_ids = []
 
         try:
-            item = pyzo.editors.newFile()
-            host = pyzo.editors._group_for_editor(item.editor)
-            pane_ids.append(
+            if pyzo.editors.getCurrentEditor() is None:
+                pyzo.editors.newFile()
+            hosts = list(pyzo.editors.groups)
+            active_host = pyzo.editors.activeGroup
+            if active_host in hosts:
+                hosts.remove(active_host)
+                hosts.insert(0, active_host)
+            editor_pane_ids.extend(
                 self._peerBackend._pane_id_from_dock(self._editorHosts[host])
+                for host in hosts
             )
         except Exception:
             self._logPeerDefaultFrameError(
@@ -2427,8 +2540,12 @@ class MainWindow(_ApplicationHostBase):
             host = next(
                 host for host in pyzo.shells.hosts if shell in host.getShells()
             )
-            pane_ids.append(
-                self._peerBackend._pane_id_from_dock(self._shellHosts[host])
+            hosts = list(pyzo.shells.hosts)
+            hosts.remove(host)
+            hosts.insert(0, host)
+            shell_pane_ids.extend(
+                self._peerBackend._pane_id_from_dock(self._shellHosts[item])
+                for item in hosts
             )
         except Exception:
             self._logPeerDefaultFrameError(
@@ -2441,28 +2558,95 @@ class MainWindow(_ApplicationHostBase):
                 dock = pyzo.toolManager._activeTools.get(tool_id)
                 if dock is None:
                     raise RuntimeError(f"tool did not create a pane: {tool_id}")
-                pane_ids.append(self._peerBackend._pane_id_from_dock(dock))
+                tool_pane_ids.append(self._peerBackend._pane_id_from_dock(dock))
             except Exception:
                 self._logPeerDefaultFrameError(
                     f"default tool pane failed ({tool_id}):\n"
                     + traceback.format_exc()
                 )
 
-        pane_ids = list(dict.fromkeys(pane_ids))
+        known_pane_ids = set(
+            editor_pane_ids + shell_pane_ids + tool_pane_ids
+        )
+        for pane_id, pane in self._peerWorkspace.panes.items():
+            if pane_id in known_pane_ids:
+                continue
+            if pane.kind is self._PeerPaneKind.EDITOR:
+                editor_pane_ids.append(pane_id)
+            elif pane.kind is self._PeerPaneKind.SHELL:
+                shell_pane_ids.append(pane_id)
+            else:
+                tool_pane_ids.append(pane_id)
+
+        pane_ids = list(
+            dict.fromkeys(editor_pane_ids + shell_pane_ids + tool_pane_ids)
+        )
         if not pane_ids:
             return
-        target = pane_ids[0]
-        if len(pane_ids) > 1:
-            result = self._peerWorkspace.split(
-                pane_ids[1], target, self._PeerDirection.BELOW
-            )
+        for pane_id in pane_ids:
+            if self._peerWorkspace.is_pane_placed(pane_id):
+                continue
+            result = self._peerWorkspace.create_frame(pane_id)
             if not result.applied:
                 raise RuntimeError(result.detail)
-            lower_target = pane_ids[1]
-            for pane_id in pane_ids[2:]:
+        target = editor_pane_ids[0] if editor_pane_ids else pane_ids[0]
+        for pane_id in editor_pane_ids:
+            if pane_id == target:
+                continue
+            result = self._peerWorkspace.tab(pane_id, target)
+            if not result.applied:
+                raise RuntimeError(result.detail)
+
+        lower_target = None
+        if shell_pane_ids:
+            lower_target = shell_pane_ids[0]
+            if lower_target != target:
+                result = self._peerWorkspace.split(
+                    lower_target, target, self._PeerDirection.BELOW
+                )
+                if not result.applied:
+                    raise RuntimeError(result.detail)
+            for pane_id in shell_pane_ids[1:]:
                 result = self._peerWorkspace.tab(pane_id, lower_target)
                 if not result.applied:
                     raise RuntimeError(result.detail)
+
+        if factory_layout:
+            previous_tool = target
+            for index, pane_id in enumerate(tool_pane_ids):
+                result = self._peerWorkspace.split(
+                    pane_id,
+                    previous_tool,
+                    self._PeerDirection.RIGHT,
+                    outer=index == 0,
+                )
+                if not result.applied:
+                    raise RuntimeError(result.detail)
+                previous_tool = pane_id
+        else:
+            remaining_tools = list(tool_pane_ids)
+            if lower_target is None and remaining_tools:
+                lower_target = remaining_tools.pop(0)
+                if lower_target != target:
+                    result = self._peerWorkspace.split(
+                        lower_target, target, self._PeerDirection.BELOW
+                    )
+                    if not result.applied:
+                        raise RuntimeError(result.detail)
+            for pane_id in remaining_tools:
+                if pane_id == lower_target:
+                    continue
+                result = self._peerWorkspace.tab(pane_id, lower_target)
+                if not result.applied:
+                    raise RuntimeError(result.detail)
+
+        if len(self._peerWorkspace.frames) != 1:
+            raise RuntimeError("default frame did not compose every pane")
+        if any(
+            not self._peerWorkspace.is_pane_placed(pane_id)
+            for pane_id in self._peerWorkspace.panes
+        ):
+            raise RuntimeError("default frame left registered panes unplaced")
 
     def _logPeerDefaultFrameError(self, message):
         self._peerDefaultFrameErrors.append(message)
@@ -3108,7 +3292,12 @@ class MainWindow(_ApplicationHostBase):
         assert not pyzo.shells.hosts
         assert not pyzo.toolManager.getLoadedTools()
 
-        result = self._peerApplicationLifecycle.application_activated()
+        previous_factory_startup = self._peerFactoryStartup
+        self._peerFactoryStartup = True
+        try:
+            result = self._peerApplicationLifecycle.application_activated()
+        finally:
+            self._peerFactoryStartup = previous_factory_startup
         assert result.value == "frame-created"
         QtWidgets.QApplication.processEvents()
         assert len(self._peerWorkspace.frames) == 1
@@ -3117,6 +3306,11 @@ class MainWindow(_ApplicationHostBase):
         assert self._PeerPaneKind.SHELL in kinds
         assert self._PeerPaneKind.TOOL in kinds
         assert not self._peerWorkspace.shutdown_requested
+        root = self._peerWorkspace.serialize_layout()["frames"][0]["root"]
+        assert root["type"] == "split"
+        assert root["orientation"] == "horizontal"
+        assert len(root["children"]) == 3
+        assert root["children"][0]["orientation"] == "vertical"
         print("Pyzo zero-frame survival and default recreation smoke test passed")
 
     def _testPeerPaneMovementMatrix(self, shell_host, shell):
