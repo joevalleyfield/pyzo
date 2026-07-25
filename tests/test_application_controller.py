@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from pyzo.core.applicationController import (
     ApplicationMetadataAccess,
     PaneLifecycleAccess,
@@ -34,10 +36,50 @@ class WorkspaceCoordinator:
         return self._workspace
 
 
+class DocumentRegistry:
+    def __init__(self):
+        self.calls = []
+        self._resource = SimpleNamespace(text="before", revision=4)
+        self._view = SimpleNamespace(document_id="document-a")
+
+    def resource(self, document_id):
+        assert document_id == "document-a"
+        return self._resource
+
+    def view(self, view_id):
+        assert view_id == "view-a"
+        if self._view is None:
+            raise KeyError(view_id)
+        return self._view
+
+    def replace_text(self, view_id, text):
+        self.calls.append(("sync", view_id, text))
+        self._resource.text = text
+        self._resource.revision += 1
+        return self._resource.revision
+
+    def can_assign_path(self, document_id, path):
+        self.calls.append(("can-save", document_id, path))
+        return path != "collision.py"
+
+    def adopt_saved(self, document_id, path, text):
+        self.calls.append(("saved", document_id, path, text))
+        return True
+
+
+class Editor:
+    _peerDocumentIdentity = "document-a"
+    _peerViewIdentity = "view-a"
+
+    def toPlainText(self):
+        return "after"
+
+
 def test_peer_application_controller_is_a_non_window_service_boundary():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     workspace = Workspace()
     workspaces = WorkspaceCoordinator(workspace)
+    documents = DocumentRegistry()
     status = object()
     frame = object()
     execution_shell = object()
@@ -83,6 +125,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         metadata=metadata,
         panes=panes,
         workspace_coordinator=workspaces,
+        document_resources=documents,
     )
 
     assert isinstance(controller, QtCore.QObject)
@@ -94,6 +137,18 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.workspaces.active_identity == "workspace-a"
     assert controller.workspaces.context().frame_id == "frame-a"
     assert controller.workspaces.model("workspace-a") is workspace
+    assert controller.documents.registry is documents
+    editor = Editor()
+    assert controller.documents.identity(editor) == "document-a"
+    assert controller.documents.view_identity(editor) == "view-a"
+    assert controller.documents.resource(editor).text == "before"
+    assert controller.documents.sync(editor) == 5
+    documents._view = None
+    assert controller.documents.sync(editor) is None
+    documents._view = SimpleNamespace(document_id="document-a")
+    assert controller.documents.can_save_as(editor, "saved.py")
+    assert not controller.documents.can_save_as(editor, "collision.py")
+    assert controller.documents.adopt_saved(editor, "saved.py") is True
     assert controller.active_peer.context().frame_id == "frame-a"
     assert controller.active_peer.frame_id() == "frame-a"
     assert controller.active_peer.window() is frame
@@ -143,4 +198,10 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         ("remove", "host"),
         ("close", "shell"),
         ("retire", "editor", {"destructive_fallback": True}),
+    ]
+    assert documents.calls == [
+        ("sync", "view-a", "after"),
+        ("can-save", "document-a", "saved.py"),
+        ("can-save", "document-a", "collision.py"),
+        ("saved", "document-a", "saved.py", "after"),
     ]

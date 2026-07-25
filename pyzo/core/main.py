@@ -769,7 +769,15 @@ class MainWindow(_ApplicationHostBase):
                 PaneKind,
                 WorkspaceModel,
             )
-            from spikes.peer_frames.identity import IdentityKind, new_identity
+            from spikes.peer_frames.document_resources import (
+                DocumentResourceRegistry,
+                DocumentViewState,
+            )
+            from spikes.peer_frames.identity import (
+                ApplicationIdentity,
+                IdentityKind,
+                new_identity,
+            )
             from spikes.peer_frames.workspace_coordinator import (
                 WorkspaceCoordinator,
             )
@@ -807,6 +815,10 @@ class MainWindow(_ApplicationHostBase):
             self._PeerPaneDescriptor = PaneDescriptor
             self._PeerPaneKind = PaneKind
             self._PeerShellState = ShellState
+            self._PeerApplicationIdentity = ApplicationIdentity
+            self._PeerIdentityKind = IdentityKind
+            self._PeerNewIdentity = new_identity
+            self._PeerDocumentViewState = DocumentViewState
             self._peerBackend = QtAdsPeerFrameBackend()
             self._peerWorkspaceIdentity = new_identity(IdentityKind.WORKSPACE)
             self._peerWorkspace = WorkspaceModel(
@@ -825,6 +837,7 @@ class MainWindow(_ApplicationHostBase):
                 self._requestPeerPaneClose,
             )
             self._peerDocumentViews = DocumentViewRegistry()
+            self._peerDocumentResources = DocumentResourceRegistry()
             self._peerShellLifecycles = ShellLifecycleRegistry()
             self._peerEditorLifecycleMigration = False
             self._peerDirtyCloseChooser = self._choosePeerDirtyClose
@@ -1027,6 +1040,7 @@ class MainWindow(_ApplicationHostBase):
                 metadata=pyzo.metadata,
                 panes=self._paneLifecycle,
                 workspace_coordinator=self._peerWorkspaces,
+                document_resources=self._peerDocumentResources,
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -1100,6 +1114,28 @@ class MainWindow(_ApplicationHostBase):
                 assert pyzo.application.workspaces.active_identity == (
                     self._peerWorkspaceIdentity
                 )
+                assert pyzo.application.documents.registry is (
+                    self._peerDocumentResources
+                )
+                first_document_id = pyzo.application.documents.identity(
+                    first_item.editor
+                )
+                second_document_id = pyzo.application.documents.identity(
+                    second_item.editor
+                )
+                assert first_document_id.kind is self._PeerIdentityKind.DOCUMENT
+                assert second_document_id.kind is self._PeerIdentityKind.DOCUMENT
+                assert first_document_id != second_document_id
+                first_view_id = pyzo.application.documents.view_identity(
+                    first_item.editor
+                )
+                assert first_view_id.kind is self._PeerIdentityKind.VIEW
+                assert self._peerDocumentResources.view(
+                    first_view_id
+                ).workspace_id == self._peerWorkspaceIdentity
+                assert pyzo.application.documents.resource(
+                    first_item.editor
+                ).text == first_item.editor.toPlainText()
                 assert pyzo.application.active_peer.window() is not None
                 assert pyzo.application.status.service is self._peerStatusService
                 assert pyzo.application.execution_target.shell() is (
@@ -1424,7 +1460,17 @@ class MainWindow(_ApplicationHostBase):
         pane_id = self._peerBackend._pane_id_from_dock(dock)
         if pane_id not in self._peerWorkspace.panes:
             return
-        document_id = f"pyzo-document-{item.lifecycleId}"
+        document_id = getattr(item.editor, "_peerDocumentIdentity", None)
+        if document_id is None:
+            recovery_id = getattr(item.editor, "_peerRecoveryId", None)
+            document_id = (
+                self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.DOCUMENT, recovery_id
+                )
+                if recovery_id
+                else self._PeerNewIdentity(self._PeerIdentityKind.DOCUMENT)
+            )
+            item.editor._peerDocumentIdentity = document_id
         bound_document_id = self._peerDocumentViews.document_id_for_view(pane_id)
         if bound_document_id == document_id:
             return
@@ -1432,17 +1478,58 @@ class MainWindow(_ApplicationHostBase):
             raise RuntimeError(
                 f"editor pane {pane_id} is already bound to {bound_document_id}"
             )
+        created_document = document_id not in self._peerDocumentResources.document_ids
+        if created_document:
+            self._peerDocumentResources.create_document(
+                item.editor.toPlainText(),
+                path=item.filename or None,
+                dirty=item.dirty,
+                identity=document_id,
+            )
+        view_id = getattr(item.editor, "_peerViewIdentity", None)
+        if view_id is None:
+            view_id = self._PeerNewIdentity(self._PeerIdentityKind.VIEW)
+            item.editor._peerViewIdentity = view_id
+        if view_id not in self._peerDocumentResources.view_ids:
+            cursor = item.editor.textCursor()
+            self._peerDocumentResources.open_view(
+                document_id,
+                self._peerWorkspaceIdentity,
+                identity=view_id,
+                state=self._PeerDocumentViewState(
+                    cursor=int(cursor.position()),
+                    selection=(
+                        int(cursor.selectionStart()),
+                        int(cursor.selectionEnd()),
+                    ),
+                    scroll=int(item.editor.verticalScrollBar().value()),
+                    focused=item.editor.hasFocus(),
+                    pinned=item.pinned,
+                ),
+            )
         lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item)
         policy = self._peerDocumentViews.register_view(
             pane_id,
             document_id,
             lifecycle,
             is_pinned=lambda item=item: item.pinned,
+            workspace_id=self._peerWorkspaceIdentity,
+            close_view=lambda view_id=view_id: self._peerDocumentResources.close_view(
+                view_id
+            ),
         )
         result = self._peerWorkspace.set_close_policy(pane_id, policy)
         if not result.applied:
             self._peerDocumentViews.forget_view(pane_id)
+            self._peerDocumentResources.close_view(view_id)
+            if created_document:
+                self._peerDocumentResources.forget_document(document_id)
             raise RuntimeError(result.detail)
+        if not getattr(item.editor, "_peerDocumentSyncInstalled", False):
+            item.editor._peerDocumentSyncInstalled = True
+            item.editor.textChanged.connect(
+                lambda editor=item.editor: pyzo.application.documents.sync(editor)
+            )
 
     def _requestPeerEditorClose(self, editor):
         host = pyzo.editors._group_for_editor(editor)

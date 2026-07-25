@@ -39,27 +39,39 @@ defPattern = re.compile(
 class Job:
     """Simple class to represent a job."""
 
-    def __init__(self, text, editorId):
+    def __init__(self, text, editorId, token=None):
         self.text = text
         self.editorId = editorId
+        self.token = token
 
 
 class Result:
     """Simple class to represent a parser result."""
 
-    def __init__(self, rootItem, importList, editorId):
+    def __init__(self, rootItem, importList, editorId, token=None):
         self.rootItem = rootItem
         self.importList = importList
         self.editorId = editorId
+        self.token = token
 
     def isMatch(self, editorId):
         """Returns whether the result matches with the given editorId.
 
         The editorId can also be an editor instance."""
+        documents = getattr(getattr(pyzo, "application", None), "documents", None)
+        if self.token is not None and documents is not None:
+            if not hasattr(editorId, "id"):
+                return bool(
+                    self.editorId == editorId
+                    and documents.token_is_current(self.token)
+                )
+            return bool(
+                documents.identity(editorId) == self.token.document_id
+                and documents.token_is_current(self.token)
+            )
         if isinstance(editorId, str):
             return self.editorId == editorId
-        else:
-            return self.editorId == editorId.id()
+        return self.editorId == editorId.id()
 
 
 class Parser(threading.Thread):
@@ -102,9 +114,11 @@ class Parser(threading.Thread):
 
         # Make job
 
-        editorId = editor.id()
+        editorId, token = self._editor_provenance(editor)
+        if editorId is None:
+            return
         with self._lock:
-            job = Job(text, editorId)
+            job = Job(text, editorId, token)
             self._requests.pop(editorId, None)  # discard old request, if present
             # add new job to end of dict (highest priority)
             self._requests[editorId] = job
@@ -214,10 +228,28 @@ class Parser(threading.Thread):
 
     def _getResult(self, editor):
         """safely obtain result"""
-        editorId = editor.id()
+        editorId, _token = self._editor_provenance(editor)
         with self._lock:
             result = self._results.get(editorId, None)
         return result
+
+    @staticmethod
+    def _editor_provenance(editor):
+        documents = getattr(getattr(pyzo, "application", None), "documents", None)
+        if documents is not None:
+            token = documents.cache_token(editor)
+            if token is not None:
+                return token.document_id, token
+            if documents.identity(editor) is not None:
+                return None, None
+        return editor.id(), None
+
+    @staticmethod
+    def _job_is_current(job):
+        if job.token is None:
+            return True
+        documents = getattr(getattr(pyzo, "application", None), "documents", None)
+        return bool(documents is not None and documents.token_is_current(job.token))
 
     def _getFictiveItem(self, name, type, editor, handleSelf=False):
         """Obtain the fictive item of the given name and type.
@@ -330,6 +362,11 @@ class Parser(threading.Thread):
                 if job:
                     # Analyse job
                     result = self._analyze(job)
+
+                    # A rename, edit, move, branch, or close may have retired
+                    # this exact resource/view revision while analysis ran.
+                    if not self._job_is_current(job):
+                        continue
 
                     # Safely store result
                     with self._lock:
@@ -599,7 +636,7 @@ class Parser(threading.Thread):
                 L.insert(0, leaf)
 
         # Return result
-        return Result(root, importList, job.editorId)
+        return Result(root, importList, job.editorId, job.token)
 
 
 ## Helper classes and functions

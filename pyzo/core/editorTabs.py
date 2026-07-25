@@ -1607,6 +1607,14 @@ class EditorTabs(QtWidgets.QWidget):
         if not filename:
             return self.saveFileAs(editor)
 
+        documents = getattr(getattr(pyzo, "application", None), "documents", None)
+        if documents is not None and not documents.can_save_as(editor, filename):
+            pyzo.metadata.show_status(
+                "Cannot save: that path belongs to another open document.",
+                5000,
+            )
+            return False
+
         # let the editor do the low level stuff...
         try:
             editor.save(filename)
@@ -1621,6 +1629,10 @@ class EditorTabs(QtWidgets.QWidget):
             m.exec()
             # Return now
             return False
+
+        if documents is not None:
+            documents.adopt_saved(editor, filename)
+            pyzo.parser.parseThis(editor)
 
         if pyzo.application is not None:
             pyzo.application.panes.retire_editor_recovery(

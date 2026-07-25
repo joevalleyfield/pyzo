@@ -43,6 +43,64 @@ class WorkspaceCollectionAccess:
         return self._coordinator.model(workspace_id)
 
 
+class DocumentCollectionAccess:
+    """Bridge peer editors to the application-owned document resource model."""
+
+    def __init__(self, registry):
+        self._registry = registry
+
+    @property
+    def registry(self):
+        return self._registry
+
+    def identity(self, editor):
+        return getattr(editor, "_peerDocumentIdentity", None)
+
+    def view_identity(self, editor):
+        return getattr(editor, "_peerViewIdentity", None)
+
+    def resource(self, editor):
+        identity = self.identity(editor)
+        return None if identity is None else self._registry.resource(identity)
+
+    def sync(self, editor):
+        view_id = self.view_identity(editor)
+        if view_id is None:
+            return None
+        try:
+            view = self._registry.view(view_id)
+        except KeyError:
+            return None
+        resource = self._registry.resource(view.document_id)
+        text = editor.toPlainText()
+        if resource.text != text:
+            return self._registry.replace_text(view_id, text)
+        return resource.revision
+
+    def can_save_as(self, editor, path):
+        identity = self.identity(editor)
+        return identity is None or self._registry.can_assign_path(identity, path)
+
+    def adopt_saved(self, editor, path):
+        identity = self.identity(editor)
+        if identity is None:
+            return None
+        return self._registry.adopt_saved(identity, path, editor.toPlainText())
+
+    def cache_token(self, editor):
+        view_id = self.view_identity(editor)
+        if view_id is None:
+            return None
+        self.sync(editor)
+        try:
+            return self._registry.view_token(view_id)
+        except KeyError:
+            return None
+
+    def token_is_current(self, token):
+        return self._registry.token_is_current(token)
+
+
 class ActivePeerLookup:
     """Resolve application context and its ordinary peer window at call time."""
 
@@ -246,12 +304,18 @@ class PeerApplicationController(QtCore.QObject):
         metadata,
         panes,
         workspace_coordinator=None,
+        document_resources=None,
     ):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
         self.workspaces = (
             WorkspaceCollectionAccess(workspace_coordinator)
             if workspace_coordinator is not None
+            else None
+        )
+        self.documents = (
+            DocumentCollectionAccess(document_resources)
+            if document_resources is not None
             else None
         )
         context_owner = workspace_coordinator or workspace
