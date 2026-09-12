@@ -47,8 +47,9 @@ class WorkspaceCollectionAccess:
 class DocumentCollectionAccess:
     """Bridge peer editors to the application-owned document resource model."""
 
-    def __init__(self, registry):
+    def __init__(self, registry, on_edit=None):
         self._registry = registry
+        self._on_edit = on_edit
         self._editors = {}
         self._pending = {}
         extensions = getattr(registry, "_persistence_extensions", {})
@@ -181,11 +182,20 @@ class DocumentCollectionAccess:
 
     def _cursor_changed(self, editor):
         document_id = self.identity(editor)
+        view_id = self.view_identity(editor)
+        if document_id is not None and view_id is not None:
+            cursor = editor.textCursor()
+            self._registry.update_view_state(
+                view_id,
+                cursor=int(cursor.position()),
+                selection=(int(cursor.selectionStart()), int(cursor.selectionEnd())),
+                scroll=int(editor.verticalScrollBar().value()),
+            )
         if (
             editor._peerRetentionChange is None
             and document_id is not None
             and document_id in self._pending
-            and self._pending[document_id][0] == self.view_identity(editor)
+            and self._pending[document_id][0] == view_id
         ):
             editor._peerRetentionBreak = True
 
@@ -224,6 +234,8 @@ class DocumentCollectionAccess:
         resource.revision += 1
         editor._peerRetentionPreviousChange = change
         self._project(document_id, editor)
+        if self._on_edit is not None:
+            self._on_edit()
 
     def _flush(self, document_id):
         pending = self._pending.pop(document_id, None)
@@ -240,7 +252,8 @@ class DocumentCollectionAccess:
     def _project(self, document_id, source=None):
         from pyzo.qt import QtCore
 
-        text = self._registry.resource(document_id).text
+        resource = self._registry.resource(document_id)
+        text = resource.text
         for editor in tuple(self._editors):
             if self.identity(editor) != document_id or editor is source:
                 continue
@@ -250,6 +263,7 @@ class DocumentCollectionAccess:
             with QtCore.QSignalBlocker(editor), QtCore.QSignalBlocker(editor.document()):
                 editor.setUndoRedoEnabled(False)
                 editor.setPlainText(text)
+                editor.document().setModified(resource.is_dirty())
             cursor = editor.textCursor()
             cursor.setPosition(min(anchor, maximum))
             cursor.setPosition(
@@ -274,7 +288,12 @@ class DocumentCollectionAccess:
 
         for target in tuple(self._editors):
             if self.identity(target) == self.identity(editor):
+                target.document().setModified(
+                    self._registry.resource(self.identity(editor)).is_dirty()
+                )
                 pyzo.parser.parseThis(target)
+        if self._on_edit is not None:
+            self._on_edit()
         return True
 
     def redo(self, editor):
@@ -289,7 +308,12 @@ class DocumentCollectionAccess:
 
         for target in tuple(self._editors):
             if self.identity(target) == self.identity(editor):
+                target.document().setModified(
+                    self._registry.resource(self.identity(editor)).is_dirty()
+                )
                 pyzo.parser.parseThis(target)
+        if self._on_edit is not None:
+            self._on_edit()
         return True
 
     def can_save_as(self, editor, path):
@@ -521,6 +545,7 @@ class PeerApplicationController(QtCore.QObject):
         panes,
         workspace_coordinator=None,
         document_resources=None,
+        retention_edit=None,
     ):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
@@ -530,7 +555,7 @@ class PeerApplicationController(QtCore.QObject):
             else None
         )
         self.documents = (
-            DocumentCollectionAccess(document_resources)
+            DocumentCollectionAccess(document_resources, on_edit=retention_edit)
             if document_resources is not None
             else None
         )

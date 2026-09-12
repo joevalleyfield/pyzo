@@ -810,6 +810,7 @@ class MainWindow(_ApplicationHostBase):
                 CleanupStep,
                 WorkspaceShutdownResult,
             )
+            from spikes.peer_frames.retention import RetentionCoordinator
             from spikes.peer_frames.session_recovery import (
                 RecoveryRetentionCoordinator,
                 RecoverySnapshot,
@@ -1172,6 +1173,7 @@ class MainWindow(_ApplicationHostBase):
                 panes=self._paneLifecycle,
                 workspace_coordinator=self._peerWorkspaces,
                 document_resources=self._peerDocumentResources,
+                retention_edit=lambda: self._peerRetentionCoordinator.edit(),
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -1182,6 +1184,14 @@ class MainWindow(_ApplicationHostBase):
                 self.restoreTools,
             )
             pyzo.workspacePersistence = _PeerWorkspacePersistenceFacade(self)
+            self._peerRetentionCoordinator = RetentionCoordinator(
+                clock=time.monotonic,
+                capture=pyzo.application.documents.persistence_snapshot,
+                writer=self._writePeerRetentionSnapshot,
+                schedule=lambda delay, callback: QtCore.QTimer.singleShot(
+                    max(0, int(delay * 1000)), callback
+                ),
+            )
         else:
             pyzo.application = None
             pyzo.workspaceSession = None
@@ -1525,7 +1535,7 @@ class MainWindow(_ApplicationHostBase):
 
         return self._peerJsonValue(pyzo.config)
 
-    def _savePeerWorkspacePersistence(self):
+    def _savePeerWorkspacePersistence(self, document_snapshot=None):
         if self._peerWorkspacePersistenceBlocked:
             raise RuntimeError(
                 "workspace persistence is unavailable; retry restore before saving"
@@ -1573,7 +1583,9 @@ class MainWindow(_ApplicationHostBase):
         }
         resources = self._mergePeerResourcePersistence(
             loaded.state.shared_resources,
-            pyzo.application.documents.persistence_snapshot(),
+            document_snapshot
+            if document_snapshot is not None
+            else pyzo.application.documents.persistence_snapshot(),
         )
         state = self._WorkspacePersistenceState(
             tuple(loaded_ids),
@@ -1589,6 +1601,16 @@ class MainWindow(_ApplicationHostBase):
             dict(committed.state.shared_resources)
         )
         return committed
+
+    def _writePeerRetentionSnapshot(self, snapshot, complete):
+        """Write one immutable owner-thread checkpoint generation."""
+
+        try:
+            self._savePeerWorkspacePersistence(snapshot)
+        except Exception as error:
+            complete(self._peerRetentionCoordinator.state.revision, error)
+        else:
+            complete(self._peerRetentionCoordinator.state.revision)
 
     def _mergePeerResourcePersistence(self, previous, current):
         """Replace only this workspace's views/main while retaining shared peers."""
