@@ -1430,6 +1430,7 @@ class MainWindow(_ApplicationHostBase):
         if self._peerFactoryStartup:
             self._peerApplicationLifecycle.initialize_default_frame()
             return
+        self._restorePersistedPeerEditors()
         workspace_record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
             str(self._peerWorkspaceIdentity), {}
         )
@@ -1443,6 +1444,61 @@ class MainWindow(_ApplicationHostBase):
             if not result.applied:
                 print("Could not restore peer workspace session: " + result.detail)
         self._peerApplicationLifecycle.initialize_default_frame()
+
+    def _restorePersistedPeerEditors(self):
+        """Recreate persisted open editor views before restoring their layout."""
+
+        resources = self._peerPersistedDocumentResources
+        documents = resources.get("documents", {})
+        views = resources.get("views", {})
+        if not isinstance(documents, dict) or not isinstance(views, dict):
+            return
+        persisted_views = [
+            (view_id, view)
+            for view_id, view in views.items()
+            if isinstance(view_id, str)
+            and isinstance(view, dict)
+            and view.get("workspace_id") == str(self._peerWorkspaceIdentity)
+        ]
+        if not persisted_views:
+            return
+        self._peerEditorLifecycleMigration = True
+        try:
+            for view_id, view in persisted_views:
+                document_id = view.get("document_id")
+                record = documents.get(document_id)
+                if not isinstance(document_id, str) or not isinstance(record, dict):
+                    continue
+                item = pyzo.editors.newFile()
+                editor = item.editor
+                path = record.get("path")
+                if isinstance(path, str):
+                    editor._filename = path
+                    editor._name = os.path.basename(path)
+                editor._peerDocumentIdentity = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.DOCUMENT, document_id
+                )
+                editor._peerViewIdentity = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.VIEW, view_id
+                )
+                editor.setPlainText(record.get("text", ""))
+                editor.document().setModified(
+                    record.get("clean_text") != record.get("text")
+                )
+                state = view.get("state", {})
+                if isinstance(state, dict):
+                    cursor = editor.textCursor()
+                    selection = state.get("selection", (0, 0))
+                    cursor.setPosition(int(selection[0]))
+                    cursor.setPosition(
+                        int(selection[1]), cursor.MoveMode.KeepAnchor
+                    )
+                    editor.setTextCursor(cursor)
+                    editor.verticalScrollBar().setValue(int(state.get("scroll", 0)))
+        finally:
+            self._peerEditorLifecycleMigration = False
+        for host in pyzo.editors.groups:
+            self._bindPeerEditorLifecycle(host)
 
     @classmethod
     def _peerJsonValue(cls, value):
