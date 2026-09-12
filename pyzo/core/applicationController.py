@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from pyzo.qt import QtCore, QtWidgets
@@ -50,6 +51,23 @@ class DocumentCollectionAccess:
         self._registry = registry
         self._editors = {}
         self._pending = {}
+        extensions = getattr(registry, "_persistence_extensions", {})
+        retained = extensions.get("peer_document_retention", {})
+        pending = retained.get("pending", {}) if isinstance(retained, dict) else {}
+        if isinstance(pending, dict) and hasattr(registry, "document_ids"):
+            views = getattr(registry, "view_ids", ())
+            for document_id in registry.document_ids:
+                record = pending.get(str(document_id))
+                if not isinstance(record, dict):
+                    continue
+                view_value = record.get("view_id")
+                base_text = record.get("base_text")
+                view_id = next(
+                    (candidate for candidate in views if str(candidate) == view_value),
+                    None,
+                )
+                if view_id is not None and isinstance(base_text, str):
+                    self._pending[document_id] = (view_id, base_text)
 
     @property
     def registry(self):
@@ -80,6 +98,24 @@ class DocumentCollectionAccess:
                 return self._registry.replace_text(view_id, text)
             self._changed(editor)
         return resource.revision
+
+    def persistence_snapshot(self):
+        """Capture registry state plus adapter-owned pending transactions."""
+
+        snapshot = deepcopy(dict(self._registry.persistence_snapshot()))
+        extensions = snapshot.setdefault("extensions", {})
+        extensions.pop("peer_document_retention", None)
+        if self._pending:
+            extensions["peer_document_retention"] = {
+                "pending": {
+                    str(document_id): {
+                        "view_id": str(view_id),
+                        "base_text": base_text,
+                    }
+                    for document_id, (view_id, base_text) in self._pending.items()
+                }
+            }
+        return snapshot
 
     def bind(self, editor):
         """Bind one live peer editor to its retained document resource."""

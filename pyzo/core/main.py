@@ -964,6 +964,11 @@ class MainWindow(_ApplicationHostBase):
                     self._peerWorkspacePersistenceLoad.state.shared_resources
                 )
             )
+            persisted_resources = self._peerPersistedDocumentResources
+            if persisted_resources.get("schema") == 1:
+                self._peerDocumentResources.restore_persistence_snapshot(
+                    persisted_resources
+                )
             self._peerShellLifecycles = ShellLifecycleRegistry()
             self._peerEditorLifecycleMigration = False
             self._peerDirtyCloseChooser = self._choosePeerDirtyClose
@@ -1512,7 +1517,7 @@ class MainWindow(_ApplicationHostBase):
         }
         resources = self._mergePeerResourcePersistence(
             loaded.state.shared_resources,
-            self._peerDocumentResources.persistence_snapshot(),
+            pyzo.application.documents.persistence_snapshot(),
         )
         state = self._WorkspacePersistenceState(
             tuple(loaded_ids),
