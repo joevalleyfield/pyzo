@@ -48,6 +48,8 @@ class DocumentCollectionAccess:
 
     def __init__(self, registry):
         self._registry = registry
+        self._editors = {}
+        self._pending = {}
 
     @property
     def registry(self):
@@ -74,14 +76,177 @@ class DocumentCollectionAccess:
         resource = self._registry.resource(view.document_id)
         text = editor.toPlainText()
         if resource.text != text:
-            return self._registry.replace_text(view_id, text)
+            if editor not in self._editors:
+                return self._registry.replace_text(view_id, text)
+            self._changed(editor)
         return resource.revision
+
+    def bind(self, editor):
+        """Bind one live peer editor to its retained document resource."""
+
+        if editor in self._editors:
+            return
+        self._editors[editor] = editor
+        editor.setUndoRedoEnabled(False)
+        editor._peerRetentionChange = None
+        editor._peerRetentionPreviousChange = None
+        editor._peerRetentionBreak = False
+        editor.document().contentsChange.connect(
+            lambda position, removed, added, editor=editor: self._contents_changed(
+                editor, position, removed, added
+            )
+        )
+        editor.cursorPositionChanged.connect(
+            lambda editor=editor: self._cursor_changed(editor)
+        )
+        editor.textChanged.connect(lambda editor=editor: self._changed(editor))
+        editor.undo = lambda editor=editor: self.undo(editor)
+        editor.redo = lambda editor=editor: self.redo(editor)
+
+    def unbind(self, editor):
+        """Release editor-scoped retention state before widget destruction."""
+
+        self._editors.pop(editor, None)
+        for name in (
+            "_calmedIntrospectNow",
+            "_calmedUpdateHelpFromAutocomplete",
+        ):
+            delayed = getattr(editor, name, None)
+            if delayed is not None:
+                delayed.clear_pending()
+        editor.calltipCancel()
+        editor._showRunCursorTimer.stop()
+        view_id = self.view_identity(editor)
+        if view_id is not None:
+            try:
+                document_id = self._registry.view(view_id).document_id
+            except KeyError:
+                document_id = self.identity(editor)
+            if document_id is not None:
+                self._pending.pop(document_id, None)
+
+    def _contents_changed(self, editor, position, removed, added):
+        editor._peerRetentionChange = (position, removed, added)
+
+    def _cursor_changed(self, editor):
+        document_id = self.identity(editor)
+        if (
+            editor._peerRetentionChange is None
+            and document_id is not None
+            and document_id in self._pending
+            and self._pending[document_id][0] == self.view_identity(editor)
+        ):
+            editor._peerRetentionBreak = True
+
+    def _changed(self, editor):
+        change = editor._peerRetentionChange
+        editor._peerRetentionChange = None
+        document_id = self.identity(editor)
+        view_id = self.view_identity(editor)
+        if document_id is None or view_id is None:
+            return
+        resource = self._registry.resource(document_id)
+        if resource.text == editor.toPlainText():
+            return
+        pending = self._pending.get(document_id)
+        previous = editor._peerRetentionPreviousChange
+        removed = change[1] if change is not None else 0
+        deletion_continues = bool(
+            change
+            and previous
+            and removed > 0
+            and change[2] == 0
+            and previous[1] > 0
+            and previous[2] == 0
+            and change[0] in (previous[0], previous[0] - previous[1])
+        )
+        if pending is not None and (
+            pending[0] != view_id
+            or editor._peerRetentionBreak
+            or (removed and not deletion_continues)
+        ):
+            self._flush(document_id)
+        editor._peerRetentionBreak = False
+        if document_id not in self._pending:
+            self._pending[document_id] = (view_id, resource.text)
+        resource.text = editor.toPlainText()
+        resource.revision += 1
+        editor._peerRetentionPreviousChange = change
+        self._project(document_id, editor)
+
+    def _flush(self, document_id):
+        pending = self._pending.pop(document_id, None)
+        if pending is None:
+            return
+        view_id, base_text = pending
+        resource = self._registry.resource(document_id)
+        if resource.text == base_text:
+            return
+        resource._undo.append(base_text)
+        resource._redo.clear()
+        self._registry._notify(resource, view_id)
+
+    def _project(self, document_id, source=None):
+        from pyzo.qt import QtCore
+
+        text = self._registry.resource(document_id).text
+        for editor in tuple(self._editors):
+            if self.identity(editor) != document_id or editor is source:
+                continue
+            cursor = editor.textCursor()
+            position, anchor = cursor.position(), cursor.anchor()
+            maximum = max(0, editor.document().characterCount() - 1)
+            with QtCore.QSignalBlocker(editor), QtCore.QSignalBlocker(editor.document()):
+                editor.setUndoRedoEnabled(False)
+                editor.setPlainText(text)
+            cursor = editor.textCursor()
+            cursor.setPosition(min(anchor, maximum))
+            cursor.setPosition(
+                min(position, maximum), cursor.MoveMode.KeepAnchor
+            )
+            editor.setTextCursor(cursor)
+
+    def flush(self, editor):
+        document_id = self.identity(editor)
+        if document_id is not None:
+            self._flush(document_id)
+
+    def undo(self, editor):
+        view_id = self.view_identity(editor)
+        if view_id is None:
+            return False
+        self.flush(editor)
+        if not self._registry.undo(view_id):
+            return False
+        self._project(self.identity(editor))
+        import pyzo
+
+        for target in tuple(self._editors):
+            if self.identity(target) == self.identity(editor):
+                pyzo.parser.parseThis(target)
+        return True
+
+    def redo(self, editor):
+        view_id = self.view_identity(editor)
+        if view_id is None:
+            return False
+        self.flush(editor)
+        if not self._registry.redo(view_id):
+            return False
+        self._project(self.identity(editor))
+        import pyzo
+
+        for target in tuple(self._editors):
+            if self.identity(target) == self.identity(editor):
+                pyzo.parser.parseThis(target)
+        return True
 
     def can_save_as(self, editor, path):
         identity = self.identity(editor)
         return identity is None or self._registry.can_assign_path(identity, path)
 
     def adopt_saved(self, editor, path):
+        self.flush(editor)
         identity = self.identity(editor)
         if identity is None:
             return None

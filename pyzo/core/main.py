@@ -1899,11 +1899,7 @@ class MainWindow(_ApplicationHostBase):
             if created_document:
                 self._peerDocumentResources.forget_document(document_id)
             raise RuntimeError(result.detail)
-        if not getattr(item.editor, "_peerDocumentSyncInstalled", False):
-            item.editor._peerDocumentSyncInstalled = True
-            item.editor.textChanged.connect(
-                lambda editor=item.editor: pyzo.application.documents.sync(editor)
-            )
+        pyzo.application.documents.bind(item.editor)
         # Editor construction may enqueue a legacy-id parse before the peer
         # document/view identity exists. Requeue now so tools consume the
         # durable resource revision rather than waiting for the next edit.
@@ -1930,6 +1926,9 @@ class MainWindow(_ApplicationHostBase):
 
     def _closeCommittedPeerEditor(self, pane_id, editor):
         assert pane_id not in self._peerWorkspace.panes
+        if pyzo.application is not None and pyzo.application.documents is not None:
+            pyzo.application.documents.flush(editor)
+            pyzo.application.documents.unbind(editor)
         result = pyzo.editors.closeFileCommitted(editor)
         if not result:
             raise RuntimeError("committed clean editor close did not complete")
