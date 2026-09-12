@@ -122,6 +122,8 @@ class DocumentCollectionAccess:
 
         if editor in self._editors:
             return
+        initial_modified = editor.document().isModified()
+        initial_text = editor.toPlainText()
         self._editors[editor] = editor
         editor.setUndoRedoEnabled(False)
         editor._peerRetentionChange = None
@@ -138,6 +140,19 @@ class DocumentCollectionAccess:
         editor.textChanged.connect(lambda editor=editor: self._changed(editor))
         editor.undo = lambda editor=editor: self.undo(editor)
         editor.redo = lambda editor=editor: self.redo(editor)
+        # Pyzo's editor constructor marks new documents dirty before the tab
+        # lifecycle is attached. Preserve the state observed at the boundary;
+        # otherwise the native setup signal can reassert that marker after bind.
+        editor.document().setModified(initial_modified)
+        if not initial_modified:
+            def restore_initial_modified_state():
+                try:
+                    if editor.toPlainText() == initial_text:
+                        editor.document().setModified(False)
+                except RuntimeError:
+                    pass
+
+            QtCore.QTimer.singleShot(0, restore_initial_modified_state)
 
     def unbind(self, editor):
         """Release editor-scoped retention state before widget destruction."""

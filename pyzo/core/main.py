@@ -1905,6 +1905,8 @@ class MainWindow(_ApplicationHostBase):
                 self._peerDocumentResources.forget_document(document_id)
             raise RuntimeError(result.detail)
         pyzo.application.documents.bind(item.editor)
+        if not item.filename and not item.editor.toPlainText():
+            item.editor.document().setModified(False)
         # Editor construction may enqueue a legacy-id parse before the peer
         # document/view identity exists. Requeue now so tools consume the
         # durable resource revision rather than waiting for the next edit.
