@@ -1659,6 +1659,17 @@ class MainWindow(_ApplicationHostBase):
             )
         }
         views.update(deepcopy(dict(current.get("views", {}))))
+        retained_views = {
+            identity: deepcopy(value)
+            for identity, value in dict(merged.get("retained_views", {})).items()
+            if not (
+                isinstance(value, dict)
+                and value.get("workspace_id") == workspace_id
+            )
+        }
+        retained_views.update(
+            deepcopy(dict(current.get("retained_views", {})))
+        )
         mains = deepcopy(dict(merged.get("mains", {})))
         mains.pop(workspace_id, None)
         mains.update(deepcopy(dict(current.get("mains", {}))))
@@ -1666,6 +1677,7 @@ class MainWindow(_ApplicationHostBase):
             {
                 "documents": documents,
                 "views": views,
+                "retained_views": retained_views,
                 "mains": mains,
                 "extensions": deepcopy(
                     current.get(
