@@ -511,6 +511,12 @@ class _PyzoEditorDocumentLifecycle:
             self._paneId, self._item.editor
         )
 
+    def close_retained_view(self):
+        self._item.editor.document().setModified(False)
+        self._mainWindow._closeCommittedPeerEditor(
+            self._paneId, self._item.editor
+        )
+
 
 class _PeerWorkspacePersistenceFacade:
     """Expose only the ordinary-save operation to application config code."""
@@ -1181,6 +1187,8 @@ class MainWindow(_ApplicationHostBase):
                 workspace_coordinator=self._peerWorkspaces,
                 document_resources=self._peerDocumentResources,
                 retention_edit=lambda: self._peerRetentionCoordinator.edit(),
+                reopen_retained_buffer=self.reopenPeerRetainedBuffer,
+                reopen_retained_view=self._reopenPeerRetainedView,
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -2044,9 +2052,12 @@ class MainWindow(_ApplicationHostBase):
             editor.setPlainText(resource.text)
             editor.document().setModified(resource.is_dirty())
             state = descriptor.state
+            maximum = max(0, editor.document().characterCount() - 1)
             cursor = editor.textCursor()
-            cursor.setPosition(int(state.selection[0]))
-            cursor.setPosition(int(state.selection[1]), cursor.MoveMode.KeepAnchor)
+            cursor.setPosition(min(int(state.selection[0]), maximum))
+            cursor.setPosition(
+                min(int(state.selection[1]), maximum), cursor.MoveMode.KeepAnchor
+            )
             editor.setTextCursor(cursor)
             editor.verticalScrollBar().setValue(int(state.scroll))
         except Exception:

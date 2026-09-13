@@ -491,7 +491,7 @@ class FileMenu(Menu):
             self.addItem(
                 translate("menu", "Reopen retained buffer... ::: Reopen a closed peer buffer."),
                 icons.folder_page,
-                pyzo.main.reopenPeerRetainedBuffer,
+                pyzo.main.reopen_retained_buffer,
             )
         #
         self._items += [

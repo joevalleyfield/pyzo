@@ -546,6 +546,8 @@ class PeerApplicationController(QtCore.QObject):
         workspace_coordinator=None,
         document_resources=None,
         retention_edit=None,
+        reopen_retained_buffer=None,
+        reopen_retained_view=None,
     ):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
@@ -559,6 +561,8 @@ class PeerApplicationController(QtCore.QObject):
             if document_resources is not None
             else None
         )
+        self.reopen_retained_buffer = reopen_retained_buffer
+        self.reopen_retained_view = reopen_retained_view
         context_owner = workspace_coordinator or workspace
         self.active_peer = ActivePeerLookup(context_owner, frame_window)
         self.dialogs = DialogParentAccess(self.active_peer)
