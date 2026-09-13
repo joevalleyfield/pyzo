@@ -1505,10 +1505,25 @@ class MainWindow(_ApplicationHostBase):
                     )
                     editor.setTextCursor(cursor)
                     editor.verticalScrollBar().setValue(int(state.get("scroll", 0)))
+                resource = self._peerDocumentResources.resource(
+                    self._PeerApplicationIdentity(
+                        self._PeerIdentityKind.DOCUMENT, document_id
+                    )
+                )
+                editor.document().setModified(resource.is_dirty())
         finally:
             self._peerEditorLifecycleMigration = False
         for host in pyzo.editors.groups:
             self._bindPeerEditorLifecycle(host)
+        for editor in pyzo.editors:
+            document_id = getattr(editor, "_peerDocumentIdentity", None)
+            if (
+                document_id is not None
+                and document_id in self._peerDocumentResources.document_ids
+            ):
+                editor.document().setModified(
+                    self._peerDocumentResources.resource(document_id).is_dirty()
+                )
 
     @classmethod
     def _peerJsonValue(cls, value):
