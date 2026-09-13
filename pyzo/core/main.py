@@ -2030,7 +2030,29 @@ class MainWindow(_ApplicationHostBase):
         result = self._peerWorkspace.request_close_pane(
             pane_id, self._resolvePeerEditorClose
         )
+        if (
+            not result.applied
+            and result.status is self._PeerOperationStatus.REFUSED
+            and result.detail == "document retention is not durable"
+            and self._choosePeerRetentionFailure() == "retry"
+        ):
+            result = self._peerWorkspace.request_close_pane(
+                pane_id, self._resolvePeerEditorClose
+            )
         return 1 if result.applied else 0
+
+    def _choosePeerRetentionFailure(self):
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setWindowTitle("Retain buffer")
+        dialog.setText("The buffer could not be retained safely.")
+        dialog.setInformativeText("Retry the retention write or cancel closing?")
+        retry = dialog.addButton(
+            "Retry", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel = dialog.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        return "retry" if dialog.clickedButton() is retry else "cancel"
 
     def _reopenPeerRetainedView(self, view_id):
         descriptor = self._peerDocumentResources.retained_view(view_id)
