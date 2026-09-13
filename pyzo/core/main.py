@@ -2100,7 +2100,11 @@ class MainWindow(_ApplicationHostBase):
             descriptor = self._peerDocumentResources.retained_view(view_id)
             resource = self._peerDocumentResources.resource(descriptor.document_id)
             name = resource.path or f"Untitled ({descriptor.document_id})"
-            labels.append(name + (" *" if resource.is_dirty() else ""))
+            labels.append(
+                name
+                + (" *" if resource.is_dirty() else "")
+                + f" — view {view_id}"
+            )
         label, accepted = QtWidgets.QInputDialog.getItem(
             self,
             "Reopen retained buffer",
@@ -2113,6 +2117,25 @@ class MainWindow(_ApplicationHostBase):
             return False
         self._reopenPeerRetainedView(retained[labels.index(label)])
         return True
+
+    def retainedPeerBufferChoices(self):
+        """Return stable display entries for retained buffers with no views."""
+
+        choices = []
+        for view_id in self._peerDocumentResources.retained_view_ids:
+            descriptor = self._peerDocumentResources.retained_view(view_id)
+            resource = self._peerDocumentResources.resource(descriptor.document_id)
+            name = resource.path or f"Untitled ({descriptor.document_id})"
+            choices.append(
+                {
+                    "label": name + (" *" if resource.is_dirty() else "")
+                    + f" — view {view_id}",
+                    "view_id": view_id,
+                    "document_id": descriptor.document_id,
+                    "workspace_id": descriptor.workspace_id,
+                }
+            )
+        return tuple(choices)
 
     def _choosePeerDirtyClose(self, _document_id, lifecycle):
         return lifecycle.choose_dirty_close()
