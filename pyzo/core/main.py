@@ -2054,13 +2054,18 @@ class MainWindow(_ApplicationHostBase):
         dialog.exec()
         return "retry" if dialog.clickedButton() is retry else "cancel"
 
-    def _reopenPeerRetainedView(self, view_id):
+    def _reopenPeerRetainedView(self, view_id, *, workspace_id=None):
         descriptor = self._peerDocumentResources.retained_view(view_id)
         resource = self._peerDocumentResources.resource(descriptor.document_id)
+        target_workspace = workspace_id or descriptor.workspace_id
+        if target_workspace != self._peerWorkspaceIdentity:
+            raise ValueError(
+                "the selected workspace is not attached to this peer window"
+            )
         self._peerDocumentResources.reopen_view(
             descriptor.document_id,
             view_id=view_id,
-            workspace_id=self._peerWorkspaceIdentity,
+            workspace_id=target_workspace,
         )
         self._peerEditorLifecycleMigration = True
         try:
@@ -2092,19 +2097,10 @@ class MainWindow(_ApplicationHostBase):
         return editor
 
     def reopenPeerRetainedBuffer(self):
-        retained = self._peerDocumentResources.retained_view_ids
-        if not retained:
+        choices = self.retainedPeerBufferChoices()
+        if not choices:
             return False
-        labels = []
-        for view_id in retained:
-            descriptor = self._peerDocumentResources.retained_view(view_id)
-            resource = self._peerDocumentResources.resource(descriptor.document_id)
-            name = resource.path or f"Untitled ({descriptor.document_id})"
-            labels.append(
-                name
-                + (" *" if resource.is_dirty() else "")
-                + f" — view {view_id}"
-            )
+        labels = [entry["label"] for entry in choices]
         label, accepted = QtWidgets.QInputDialog.getItem(
             self,
             "Reopen retained buffer",
@@ -2115,7 +2111,31 @@ class MainWindow(_ApplicationHostBase):
         )
         if not accepted:
             return False
-        self._reopenPeerRetainedView(retained[labels.index(label)])
+        choice = choices[labels.index(label)]
+        workspaces = tuple(self._peerWorkspaces.workspace_ids)
+        workspace_labels = [
+            self._peerWorkspaces.descriptor(identity).name for identity in workspaces
+        ]
+        workspace_label, accepted = QtWidgets.QInputDialog.getItem(
+            self,
+            "Reopen retained buffer",
+            "Destination workspace:",
+            workspace_labels,
+            max(0, workspaces.index(choice["workspace_id"]))
+            if choice["workspace_id"] in workspaces
+            else 0,
+            False,
+        )
+        if not accepted:
+            return False
+        target_workspace = workspaces[workspace_labels.index(workspace_label)]
+        try:
+            self._reopenPeerRetainedView(
+                choice["view_id"], workspace_id=target_workspace
+            )
+        except ValueError as error:
+            QtWidgets.QMessageBox.warning(self, "Reopen retained buffer", str(error))
+            return False
         return True
 
     def retainedPeerBufferChoices(self):
@@ -2126,10 +2146,13 @@ class MainWindow(_ApplicationHostBase):
             descriptor = self._peerDocumentResources.retained_view(view_id)
             resource = self._peerDocumentResources.resource(descriptor.document_id)
             name = resource.path or f"Untitled ({descriptor.document_id})"
+            workspace = self._peerWorkspaces.descriptor(
+                descriptor.workspace_id
+            ).name
             choices.append(
                 {
                     "label": name + (" *" if resource.is_dirty() else "")
-                    + f" — view {view_id}",
+                    + f" — {workspace} — view {view_id}",
                     "view_id": view_id,
                     "document_id": descriptor.document_id,
                     "workspace_id": descriptor.workspace_id,
