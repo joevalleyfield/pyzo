@@ -259,12 +259,12 @@ class DocumentCollectionAccess:
                 continue
             cursor = editor.textCursor()
             position, anchor = cursor.position(), cursor.anchor()
-            maximum = max(0, editor.document().characterCount() - 1)
             with QtCore.QSignalBlocker(editor), QtCore.QSignalBlocker(editor.document()):
                 editor.setUndoRedoEnabled(False)
                 editor.setPlainText(text)
                 editor.document().setModified(resource.is_dirty())
             cursor = editor.textCursor()
+            maximum = max(0, editor.document().characterCount() - 1)
             cursor.setPosition(min(anchor, maximum))
             cursor.setPosition(
                 min(position, maximum), cursor.MoveMode.KeepAnchor
