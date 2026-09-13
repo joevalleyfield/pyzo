@@ -487,6 +487,12 @@ class FileMenu(Menu):
             icons.folder_page,
             pyzo.editors.openFile,
         )
+        if self.parent().property("applicationCommandProjection"):
+            self.addItem(
+                translate("menu", "Reopen retained buffer... ::: Reopen a closed peer buffer."),
+                icons.folder_page,
+                pyzo.main.reopenPeerRetainedBuffer,
+            )
         #
         self._items += [
             self.addItem(

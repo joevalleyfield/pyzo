@@ -486,6 +486,13 @@ class _PyzoEditorDocumentLifecycle:
     def recovery_snapshot(self):
         return self._mainWindow._snapshotPeerDocument(self._item)
 
+    def retain_document(self):
+        documents = pyzo.application.documents
+        if documents is not None:
+            documents.flush(self._item.editor)
+        coordinator = getattr(self._mainWindow, "_peerRetentionCoordinator", None)
+        return coordinator is None or coordinator.flush()
+
     def discard_recovery_for_exit(self):
         self._mainWindow._retirePeerRecoveryForEditor(
             self._item.editor, destructive_fallback=True
@@ -1989,6 +1996,7 @@ class MainWindow(_ApplicationHostBase):
             close_view=lambda view_id=view_id: self._peerDocumentResources.close_view(
                 view_id
             ),
+            retain_on_final_close=True,
         )
         result = self._peerWorkspace.set_close_policy(pane_id, policy)
         if not result.applied:
@@ -2015,6 +2023,63 @@ class MainWindow(_ApplicationHostBase):
             pane_id, self._resolvePeerEditorClose
         )
         return 1 if result.applied else 0
+
+    def _reopenPeerRetainedView(self, view_id):
+        descriptor = self._peerDocumentResources.retained_view(view_id)
+        resource = self._peerDocumentResources.resource(descriptor.document_id)
+        self._peerDocumentResources.reopen_view(
+            descriptor.document_id,
+            view_id=view_id,
+            workspace_id=self._peerWorkspaceIdentity,
+        )
+        self._peerEditorLifecycleMigration = True
+        try:
+            item = pyzo.editors.newFile()
+            editor = item.editor
+            if resource.path:
+                editor._filename = resource.path
+                editor._name = os.path.basename(resource.path)
+            editor._peerDocumentIdentity = descriptor.document_id
+            editor._peerViewIdentity = view_id
+            editor.setPlainText(resource.text)
+            editor.document().setModified(resource.is_dirty())
+            state = descriptor.state
+            cursor = editor.textCursor()
+            cursor.setPosition(int(state.selection[0]))
+            cursor.setPosition(int(state.selection[1]), cursor.MoveMode.KeepAnchor)
+            editor.setTextCursor(cursor)
+            editor.verticalScrollBar().setValue(int(state.scroll))
+        except Exception:
+            self._peerDocumentResources.close_view(view_id)
+            raise
+        finally:
+            self._peerEditorLifecycleMigration = False
+        self._bindPeerEditorLifecycle(pyzo.editors._group_for_editor(editor))
+        pyzo.parser.parseThis(editor)
+        return editor
+
+    def reopenPeerRetainedBuffer(self):
+        retained = self._peerDocumentResources.retained_view_ids
+        if not retained:
+            return False
+        labels = []
+        for view_id in retained:
+            descriptor = self._peerDocumentResources.retained_view(view_id)
+            resource = self._peerDocumentResources.resource(descriptor.document_id)
+            name = resource.path or f"Untitled ({descriptor.document_id})"
+            labels.append(name + (" *" if resource.is_dirty() else ""))
+        label, accepted = QtWidgets.QInputDialog.getItem(
+            self,
+            "Reopen retained buffer",
+            "Buffer:",
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return False
+        self._reopenPeerRetainedView(retained[labels.index(label)])
+        return True
 
     def _choosePeerDirtyClose(self, _document_id, lifecycle):
         return lifecycle.choose_dirty_close()
