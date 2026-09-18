@@ -2514,7 +2514,7 @@ class MainWindow(_ApplicationHostBase):
                 self._PeerCleanupStep(
                     "projectors", self._peerStatusProjector.close
                 ),
-                self._PeerCleanupStep("backend", self._peerBackend.close),
+                self._PeerCleanupStep("workspace runtime", self._peerRuntime.dispose),
             ),
             finish_quit=QtWidgets.qApp.exit,
             replace_process=self._replacePyzoProcess,
