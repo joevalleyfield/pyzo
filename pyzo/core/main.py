@@ -835,6 +835,7 @@ class MainWindow(_ApplicationHostBase):
             )
             from spikes.peer_frames.status import StatusState
             from spikes.peer_frames.workspace_session import WorkspaceSessionService
+            from pyzo.core.workspaceRuntime import WorkspaceRuntime
             from spikes.peer_frames.workspace_persistence import (
                 WorkspacePersistenceState,
                 WorkspacePersistenceStore,
@@ -954,12 +955,21 @@ class MainWindow(_ApplicationHostBase):
                     IdentityKind.WORKSPACE, persisted_workspace_id
                 )
             self._PeerDocumentViewState = DocumentViewState
-            self._peerBackend = QtAdsPeerFrameBackend()
-            self._peerWorkspaceIdentity = candidate_identity
-            self._peerWorkspace = WorkspaceModel(
-                self._peerBackend,
-                workspace_id=self._peerWorkspaceIdentity,
+            self._peerRuntime = WorkspaceRuntime.create(
+                identity=candidate_identity,
+                backend_factory=QtAdsPeerFrameBackend,
+                model_factory=lambda backend, identity: WorkspaceModel(
+                    backend,
+                    workspace_id=identity,
+                ),
+                frame_close_request=self._requestPeerFrameClose,
+                pane_close_request=self._requestPeerPaneClose,
             )
+            # Compatibility aliases keep legacy call sites stable while the
+            # runtime owns backend/model identity and native host lookup.
+            self._peerBackend = self._peerRuntime.backend
+            self._peerWorkspaceIdentity = self._peerRuntime.identity
+            self._peerWorkspace = self._peerRuntime.model
             self._peerWorkspaces = WorkspaceCoordinator()
             self._peerWorkspaces.add_workspace(
                 self._peerWorkspace,
@@ -1096,8 +1106,11 @@ class MainWindow(_ApplicationHostBase):
         self._QtAds = QtAds
         self._EditorTabs = EditorTabs
         self._ShellStackWidget = ShellStackWidget
-        self._editorHosts = {}
-        self._shellHosts = {}
+        runtime = getattr(self, "_peerRuntime", None)
+        self._editorHosts = (
+            runtime.editor_hosts if runtime is not None else {}
+        )
+        self._shellHosts = runtime.shell_hosts if runtime is not None else {}
         self._editorHostSerial = 0
         self._shellHostSerial = 0
         self._menusReady = False
@@ -1818,20 +1831,26 @@ class MainWindow(_ApplicationHostBase):
         print("Pyzo ADS foreground-window ordering smoke test passed")
 
     def _createEditorHost(self):
-        self._editorHostSerial += 1
+        runtime = getattr(self, "_peerRuntime", None)
+        if runtime is not None:
+            runtime.editor_host_serial += 1
+            serial = runtime.editor_host_serial
+        else:
+            self._editorHostSerial += 1
+            serial = self._editorHostSerial
         target_dock = None
         if self._peerFrameMode:
             editor_service = getattr(pyzo, "editors", None)
             active_host = getattr(editor_service, "activeGroup", None)
             target_dock = self._editorHosts.get(active_host)
         dock = self._QtAds.CDockWidget(self._dockManager, "Untitled")
-        dock.setObjectName(f"pyzo-editor-dock-{self._editorHostSerial}")
+        dock.setObjectName(f"pyzo-editor-dock-{serial}")
         host = self._EditorTabs(dock)
-        host.setObjectName(f"pyzo-editor-host-{self._editorHostSerial}")
+        host.setObjectName(f"pyzo-editor-host-{serial}")
         dock.setWidget(host)
         if self._peerFrameMode:
             self._registerPeerDock(
-                f"editor-{self._editorHostSerial}",
+                f"editor-{serial}",
                 self._PeerPaneKind.EDITOR,
                 "Untitled",
                 dock,
@@ -2294,11 +2313,17 @@ class MainWindow(_ApplicationHostBase):
                 dock.deleteLater()
 
     def _createShellHost(self):
-        self._shellHostSerial += 1
+        runtime = getattr(self, "_peerRuntime", None)
+        if runtime is not None:
+            runtime.shell_host_serial += 1
+            serial = runtime.shell_host_serial
+        else:
+            self._shellHostSerial += 1
+            serial = self._shellHostSerial
         dock = self._QtAds.CDockWidget(self._dockManager, "Shell")
-        dock.setObjectName(f"pyzo-shell-dock-{self._shellHostSerial}")
+        dock.setObjectName(f"pyzo-shell-dock-{serial}")
         host = self._ShellStackWidget(dock)
-        host.setObjectName(f"pyzo-shell-host-{self._shellHostSerial}")
+        host.setObjectName(f"pyzo-shell-host-{serial}")
         features = dock.DockWidgetFeature
         if self._peerFrameMode or pyzo.config.settings.allowFloatingShell:
             dock.setFeatures(features.DockWidgetMovable | features.DockWidgetFloatable)
@@ -2307,7 +2332,7 @@ class MainWindow(_ApplicationHostBase):
         dock.setWidget(host)
         if self._peerFrameMode:
             self._registerPeerDock(
-                f"shell-{self._shellHostSerial}",
+                f"shell-{serial}",
                 self._PeerPaneKind.SHELL,
                 "Shell",
                 dock,
