@@ -1024,7 +1024,11 @@ class MainWindow(_ApplicationHostBase):
             self._dockManager = self._peerBackend.manager
             self._peerStatusState = StatusState()
             self._peerStatusProjector = QtAdsStatusProjector(
-                self._peerStatusState, self._dockManager
+                self._peerStatusState,
+                self._dockManager,
+                frame_provider=lambda: tuple(
+                    self._peerRuntime.frame_windows.values()
+                ),
             )
             pyzo.commands = CommandRegistry(
                 self._peerWorkspaces.resolve_active_context
@@ -1257,7 +1261,11 @@ class MainWindow(_ApplicationHostBase):
                 menu_title=file_title,
                 menu_bar_builder=menu.buildMenus,
                 command_menu_titles={VIEW_STATUS_COMMAND: view_title},
+                frame_provider=lambda: tuple(
+                    self._peerRuntime.frame_windows.values()
+                ),
             )
+            self._peerBackend.add_settled_callback(self._reconcilePeerChrome)
             pyzo.menuProjector = self._peerCommandProjector
         else:
             menu.buildMenus(self.menuBar())
@@ -1700,6 +1708,17 @@ class MainWindow(_ApplicationHostBase):
             }
         )
         return merged
+
+    def _reconcilePeerChrome(self, windows=None):
+        if not self._peerFrameMode:
+            return
+        snapshot = tuple(
+            windows
+            if windows is not None
+            else self._peerRuntime.frame_windows.values()
+        )
+        self._peerStatusProjector.reconcile(snapshot)
+        self._peerCommandProjector.reconcile(snapshot)
 
     def _onFocusedDockWidgetChanged(self, dock_widget):
         # Focus selects command/service context. It does not bind an editor to
