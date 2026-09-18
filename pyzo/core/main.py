@@ -1026,9 +1026,7 @@ class MainWindow(_ApplicationHostBase):
             self._peerStatusProjector = QtAdsStatusProjector(
                 self._peerStatusState,
                 self._dockManager,
-                frame_provider=lambda: tuple(
-                    self._peerRuntime.frame_windows.values()
-                ),
+                frame_provider=self._peerRuntimeFrameWindows,
             )
             pyzo.commands = CommandRegistry(
                 self._peerWorkspaces.resolve_active_context
@@ -1261,9 +1259,7 @@ class MainWindow(_ApplicationHostBase):
                 menu_title=file_title,
                 menu_bar_builder=menu.buildMenus,
                 command_menu_titles={VIEW_STATUS_COMMAND: view_title},
-                frame_provider=lambda: tuple(
-                    self._peerRuntime.frame_windows.values()
-                ),
+                frame_provider=self._peerRuntimeFrameWindows,
             )
             self._peerBackend.add_settled_callback(self._reconcilePeerChrome)
             pyzo.menuProjector = self._peerCommandProjector
@@ -1708,6 +1704,10 @@ class MainWindow(_ApplicationHostBase):
             }
         )
         return merged
+
+    def _peerRuntimeFrameWindows(self):
+        self._peerBackend._refresh_live_frame_windows()
+        return tuple(self._peerRuntime.frame_windows.values())
 
     def _reconcilePeerChrome(self, windows=None):
         if not self._peerFrameMode:
@@ -3794,32 +3794,22 @@ class MainWindow(_ApplicationHostBase):
         editor = replacement.editor
         host = pyzo.editors._group_for_editor(editor)
         dock = self._editorHosts[host]
+        pane_id = self._peerBackend._pane_id_from_dock(dock)
         editor.setPlainText("unsaved peer buffer\n")
         editor.document().setModified(True)
-        before = self._peerWorkspace.serialize_layout()
 
-        original_save = host.saveFile
         original_chooser = self._peerDirtyCloseChooser
         try:
-            host.saveFile = lambda _editor: False
-            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "save"
-            dock.requestCloseDockWidget()
-            assert not self._peerBackend.last_pane_close_result.applied
-            assert self._peerWorkspace.serialize_layout() == before
-            assert editor.document().isModified()
+            def unexpected_dirty_prompt(*_args):
+                raise AssertionError("final retained close requested Save/Discard")
 
-            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "cancel"
-            dock.requestCloseDockWidget()
-            assert not self._peerBackend.last_pane_close_result.applied
-            assert self._peerWorkspace.serialize_layout() == before
-            assert editor.document().isModified()
-
-            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "discard"
+            self._peerDirtyCloseChooser = unexpected_dirty_prompt
             dock.requestCloseDockWidget()
             assert self._peerBackend.last_pane_close_result.applied
             assert editor not in tuple(pyzo.editors)
+            assert pane_id not in self._peerWorkspace.panes
+            assert pane_id in self._peerDocumentViews.retained_view_ids
         finally:
-            host.saveFile = original_save
             self._peerDirtyCloseChooser = original_chooser
 
         file_descriptor, filename = tempfile.mkstemp(
@@ -3833,7 +3823,9 @@ class MainWindow(_ApplicationHostBase):
             assert saved_item is not None
             saved_item.editor.setPlainText("after = True\n")
             saved_item.editor.document().setModified(True)
-            self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: "save"
+            assert saved_item.editor.document().isModified()
+            assert pyzo.editors.saveFile(saved_item.editor)
+            assert not saved_item.editor.document().isModified()
             assert pyzo.editors.closeFile(saved_item.editor) == 1
             with open(filename, encoding="utf-8") as stream:
                 assert stream.read() == "after = True\n"
@@ -3878,10 +3870,12 @@ class MainWindow(_ApplicationHostBase):
         shell_context = shell._context
         assert self._peerWorkspace.tab(shell_pane, first_pane).applied
         before = self._peerWorkspace.serialize_layout()
-        choices = iter(("discard", "cancel"))
-        self._peerDirtyCloseChooser = lambda _document_id, _lifecycle: next(choices)
+        def unexpected_dirty_prompt(*_args):
+            raise AssertionError("retained final close requested Save/Discard")
+
         original_shell_chooser = self._peerShellCloseChooser
-        self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "terminate"
+        self._peerDirtyCloseChooser = unexpected_dirty_prompt
+        self._peerShellCloseChooser = lambda _pane_id, _lifecycle: "cancel"
         result = self._peerWorkspace.request_close_frame(
             frame_id, self._resolvePeerClose
         )
