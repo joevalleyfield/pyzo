@@ -3760,8 +3760,14 @@ class MainWindow(_ApplicationHostBase):
         live_window_ids = {
             id(window) for window in self._peerBackend.frame_windows.values()
         }
-        assert self._peerStatusProjector.projected_window_ids == live_window_ids
-        assert self._peerCommandProjector.projected_window_ids == live_window_ids
+        assert self._peerStatusProjector.projected_window_ids == live_window_ids, (
+            self._peerStatusProjector.projected_window_ids,
+            live_window_ids,
+        )
+        assert self._peerCommandProjector.projected_window_ids == live_window_ids, (
+            self._peerCommandProjector.projected_window_ids,
+            live_window_ids,
+        )
         print("Pyzo clean editor lifecycle matrix smoke test passed")
         self._testDirtyPeerEditorLifecycle(replacement)
 
