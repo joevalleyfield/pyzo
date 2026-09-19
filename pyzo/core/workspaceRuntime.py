@@ -79,3 +79,39 @@ class WorkspaceRuntime:
         self.editor_hosts.clear()
         self.shell_hosts.clear()
         self.backend.close()
+
+
+class WorkspaceRuntimeCatalog:
+    """Construct and dispose several runtime-owned native projections."""
+
+    def __init__(self, *, shared_services: Mapping[str, Any] | None = None):
+        self.shared_services = dict(shared_services or {})
+        self._runtimes: dict[Any, WorkspaceRuntime] = {}
+
+    @property
+    def identities(self) -> tuple[Any, ...]:
+        return tuple(self._runtimes)
+
+    def runtime(self, identity: Any) -> WorkspaceRuntime:
+        try:
+            return self._runtimes[identity]
+        except KeyError:
+            raise KeyError(f"unknown workspace runtime: {identity}") from None
+
+    def create(self, **kwargs: Any) -> WorkspaceRuntime:
+        identity = kwargs["identity"]
+        if identity in self._runtimes:
+            raise ValueError(f"workspace runtime already exists: {identity}")
+        kwargs.setdefault("shared_services", self.shared_services)
+        runtime = WorkspaceRuntime.create(**kwargs)
+        self._runtimes[identity] = runtime
+        return runtime
+
+    def dispose(self, identity: Any) -> None:
+        runtime = self._runtimes.pop(identity, None)
+        if runtime is not None:
+            runtime.dispose()
+
+    def dispose_all(self) -> None:
+        for identity in tuple(reversed(self.identities)):
+            self.dispose(identity)
