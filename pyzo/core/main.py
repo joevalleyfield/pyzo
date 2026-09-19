@@ -837,7 +837,10 @@ class MainWindow(_ApplicationHostBase):
             )
             from spikes.peer_frames.status import StatusState
             from spikes.peer_frames.workspace_session import WorkspaceSessionService
-            from pyzo.core.workspaceRuntime import WorkspaceRuntime
+            from pyzo.core.workspaceRuntime import (
+                WorkspaceRuntime,
+                WorkspaceRuntimeCatalog,
+            )
             from spikes.peer_frames.workspace_persistence import (
                 WorkspacePersistenceState,
                 WorkspacePersistenceStore,
@@ -964,7 +967,8 @@ class MainWindow(_ApplicationHostBase):
                     IdentityKind.WORKSPACE, persisted_workspace_id
                 )
             self._PeerDocumentViewState = DocumentViewState
-            self._peerRuntime = WorkspaceRuntime.create(
+            self._peerRuntimeCatalog = WorkspaceRuntimeCatalog()
+            self._peerRuntime = self._peerRuntimeCatalog.create(
                 identity=candidate_identity,
                 backend_factory=QtAdsPeerFrameBackend,
                 model_factory=lambda backend, identity: WorkspaceModel(
@@ -2574,7 +2578,12 @@ class MainWindow(_ApplicationHostBase):
                 self._PeerCleanupStep(
                     "projectors", self._peerStatusProjector.close
                 ),
-                self._PeerCleanupStep("workspace runtime", self._peerRuntime.dispose),
+                self._PeerCleanupStep(
+                    "workspace runtime",
+                    lambda: self._peerRuntimeCatalog.dispose(
+                        self._peerWorkspaceIdentity
+                    ),
+                ),
             ),
             finish_quit=QtWidgets.qApp.exit,
             replace_process=self._replacePyzoProcess,
