@@ -107,6 +107,44 @@ class WorkspaceRuntimeCatalog:
         self._runtimes[identity] = runtime
         return runtime
 
+    def restore_loaded(
+        self,
+        records: Mapping[Any, Mapping[str, Any]],
+        loaded_identities: tuple[Any, ...],
+        *,
+        construct: Callable[[Any, Mapping[str, Any]], WorkspaceRuntime],
+    ) -> tuple[dict[Any, WorkspaceRuntime], dict[Any, str]]:
+        """Restore each requested identity, isolating failures for retry.
+
+        ``construct`` owns record-specific model/layout restoration and must
+        return a fully bound runtime. Existing identities are reused, so a
+        retry cannot duplicate a successfully restored runtime. A failed
+        identity is omitted from the catalog and returned with its diagnostic.
+        """
+
+        restored: dict[Any, WorkspaceRuntime] = {}
+        failures: dict[Any, str] = {}
+        for identity in loaded_identities:
+            if identity in self._runtimes:
+                restored[identity] = self._runtimes[identity]
+                continue
+            record = records.get(identity)
+            if not isinstance(record, Mapping):
+                failures[identity] = "workspace record is unavailable"
+                continue
+            try:
+                runtime = construct(identity, record)
+            except Exception as error:
+                failures[identity] = str(error) or type(error).__name__
+                continue
+            if runtime.identity != identity:
+                runtime.dispose()
+                failures[identity] = "constructed runtime identity mismatch"
+                continue
+            self._runtimes[identity] = runtime
+            restored[identity] = runtime
+        return restored, failures
+
     def dispose(self, identity: Any) -> None:
         runtime = self._runtimes.pop(identity, None)
         if runtime is not None:

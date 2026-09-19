@@ -984,10 +984,75 @@ class MainWindow(_ApplicationHostBase):
             self._peerWorkspaceIdentity = self._peerRuntime.identity
             self._peerWorkspace = self._peerRuntime.model
             self._peerWorkspaces = WorkspaceCoordinator()
+            primary_record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+                str(self._peerWorkspaceIdentity), {}
+            )
+            primary_name = (
+                primary_record.get("name", "Default")
+                if isinstance(primary_record, dict)
+                else "Default"
+            )
+            primary_location = (
+                primary_record.get("persistence_location")
+                if isinstance(primary_record, dict)
+                else None
+            )
+            primary_profile = (
+                primary_record.get("profile", {})
+                if isinstance(primary_record, dict)
+                else {}
+            )
             self._peerWorkspaces.add_workspace(
                 self._peerWorkspace,
                 identity=self._peerWorkspaceIdentity,
-                name="Default",
+                name=primary_name,
+                persistence_location=primary_location,
+                state=primary_profile,
+            )
+            self._peerWorkspaceRestoreFailures = {}
+            loaded_ids = self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
+            records = self._peerWorkspacePersistenceLoad.state.workspaces
+
+            def restore_runtime(identity, record):
+                runtime_identity = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.WORKSPACE, identity
+                )
+                runtime = self._peerRuntimeCatalog.create(
+                    identity=runtime_identity,
+                    backend_factory=QtAdsPeerFrameBackend,
+                    model_factory=lambda backend, workspace_id: WorkspaceModel(
+                        backend, workspace_id=workspace_id
+                    ),
+                    frame_close_request=self._requestPeerFrameClose,
+                    pane_close_request=self._requestPeerPaneClose,
+                )
+                try:
+                    self._peerWorkspaces.add_workspace(
+                        runtime.model,
+                        identity=runtime_identity,
+                        name=str(record.get("name", identity)),
+                        persistence_location=record.get("persistence_location"),
+                        state=record.get("profile", {}),
+                    )
+                except Exception:
+                    self._peerRuntimeCatalog.dispose(runtime_identity)
+                    raise
+                return runtime
+
+            restored, failures = self._peerRuntimeCatalog.restore_loaded(
+                {
+                    str(identity): record
+                    for identity, record in records.items()
+                },
+                tuple(
+                    identity
+                    for identity in loaded_ids
+                    if identity != str(self._peerWorkspaceIdentity)
+                ),
+                construct=restore_runtime,
+            )
+            self._peerWorkspaceRestoreFailures.update(
+                {str(identity): detail for identity, detail in failures.items()}
             )
             self._peerBackend.bind_model(
                 self._peerWorkspace,
@@ -2580,9 +2645,7 @@ class MainWindow(_ApplicationHostBase):
                 ),
                 self._PeerCleanupStep(
                     "workspace runtime",
-                    lambda: self._peerRuntimeCatalog.dispose(
-                        self._peerWorkspaceIdentity
-                    ),
+                    self._peerRuntimeCatalog.dispose_all,
                 ),
             ),
             finish_quit=QtWidgets.qApp.exit,

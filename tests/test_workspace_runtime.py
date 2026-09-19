@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from pyzo.core.workspaceRuntime import WorkspaceRuntime
+from pyzo.core.workspaceRuntime import WorkspaceRuntime, WorkspaceRuntimeCatalog
 from spikes.peer_frames.contract import WorkspaceModel
 from spikes.peer_frames.fake_backend import FakeBackend as CoordinatorBackend
 from spikes.peer_frames.identity import IdentityKind, new_identity
@@ -106,6 +106,44 @@ class WorkspaceRuntimeTests(unittest.TestCase):
                     coordinator.remove_workspace(runtime.identity).applied
                 )
                 runtime.dispose()
+
+    def test_restore_loaded_isolates_failure_and_retry_reuses_success(self):
+        catalog = WorkspaceRuntimeCatalog()
+        backends = {identity: FakeBackend() for identity in ("a", "b")}
+        attempts = {"b": 0}
+
+        def construct(identity, _record):
+            if identity == "b" and attempts[identity] == 0:
+                attempts[identity] += 1
+                raise RuntimeError("layout restore failed")
+            return WorkspaceRuntime.create(
+                identity=identity,
+                backend_factory=lambda identity=identity: backends[identity],
+                model_factory=FakeModel,
+            )
+
+        try:
+            restored, failures = catalog.restore_loaded(
+                {"a": {"identity": "a"}, "b": {"identity": "b"}},
+                ("a", "b"),
+                construct=construct,
+            )
+            self.assertEqual(tuple(restored), ("a",))
+            self.assertEqual(failures, {"b": "layout restore failed"})
+            self.assertEqual(catalog.identities, ("a",))
+
+            retried, failures = catalog.restore_loaded(
+                {"a": {"identity": "a"}, "b": {"identity": "b"}},
+                ("a", "b"),
+                construct=construct,
+            )
+            self.assertIs(retried["a"], restored["a"])
+            self.assertIsNotNone(retried["b"])
+            self.assertEqual(failures, {})
+            self.assertEqual(catalog.identities, ("a", "b"))
+            self.assertEqual(backends["b"].close_count, 0)
+        finally:
+            catalog.dispose_all()
 
 
 if __name__ == "__main__":
