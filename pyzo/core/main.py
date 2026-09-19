@@ -793,6 +793,7 @@ class MainWindow(_ApplicationHostBase):
                 CloseDecision,
                 CloseVote,
                 Direction,
+                OperationResult,
                 OperationStatus,
                 PaneDescriptor,
                 PaneKind,
@@ -850,8 +851,11 @@ class MainWindow(_ApplicationHostBase):
             self._PeerCloseDecision = CloseDecision
             self._PeerCloseVote = CloseVote
             self._PeerOperationStatus = OperationStatus
+            self._PeerOperationResult = OperationResult
             self._PeerPaneDescriptor = PaneDescriptor
             self._PeerPaneKind = PaneKind
+            self._PeerWorkspaceModel = WorkspaceModel
+            self._PeerQtAdsBackend = QtAdsPeerFrameBackend
             self._PeerShellState = ShellState
             self._PeerApplicationIdentity = ApplicationIdentity
             self._PeerIdentityKind = IdentityKind
@@ -1171,6 +1175,13 @@ class MainWindow(_ApplicationHostBase):
         self._dockManager.focusedDockWidgetChanged.connect(
             self._onFocusedDockWidgetChanged
         )
+        if self._peerFrameMode:
+            for identity in self._peerRuntimeCatalog.identities:
+                runtime = self._peerRuntimeCatalog.runtime(identity)
+                if runtime.backend.manager is not self._dockManager:
+                    runtime.backend.manager.focusedDockWidgetChanged.connect(
+                        self._onFocusedDockWidgetChanged
+                    )
         self._toolWorkspace = ToolWorkspaceAccess(
             dock_manager=self._dockManager,
             add_dock=self._addToolDock,
@@ -1261,9 +1272,7 @@ class MainWindow(_ApplicationHostBase):
             self._peerApplicationController = PeerApplicationController(
                 parent=QtWidgets.qApp,
                 workspace=self._peerWorkspace,
-                frame_window=lambda frame_id: self._peerBackend.frame_windows.get(
-                    frame_id
-                ),
+                frame_window=self._peerFrameWindow,
                 status_service=lambda: self._peerStatusService,
                 shell_commands=pyzo.shellCommands,
                 run_commands=pyzo.runCommands,
@@ -1278,6 +1287,8 @@ class MainWindow(_ApplicationHostBase):
                 metadata=pyzo.metadata,
                 panes=self._paneLifecycle,
                 workspace_coordinator=self._peerWorkspaces,
+                activate_workspace=self._activatePeerWorkspace,
+                create_workspace=self._createPeerWorkspace,
                 document_resources=self._peerDocumentResources,
                 retention_edit=lambda: self._peerRetentionCoordinator.edit(),
                 reopen_retained_buffer=self.reopenPeerRetainedBuffer,
@@ -1640,6 +1651,16 @@ class MainWindow(_ApplicationHostBase):
                 editor.document().setModified(resource.is_dirty())
         finally:
             self._peerEditorLifecycleMigration = False
+        for identity in self._peerRuntimeCatalog.identities:
+            if identity != self._peerRuntime.identity:
+                continue
+            runtime = self._peerRuntimeCatalog.runtime(identity)
+            record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+                str(identity), {}
+            )
+            result = self._restorePeerRuntimeLayout(runtime, record)
+            if not result.applied:
+                self._peerWorkspaceRestoreFailures[str(identity)] = result.detail
         for host in pyzo.editors.groups:
             self._bindPeerEditorLifecycle(host)
         for editor in pyzo.editors:
@@ -1651,6 +1672,87 @@ class MainWindow(_ApplicationHostBase):
                 editor.document().setModified(
                     self._peerDocumentResources.resource(document_id).is_dirty()
                 )
+
+    def _restorePeerRuntimeLayout(self, runtime, record):
+        """Restore a runtime layout after translating fresh native identities."""
+
+        session = record.get("session", {}) if isinstance(record, dict) else {}
+        saved = session.get("layout") if isinstance(session, dict) else None
+        if not isinstance(saved, dict) or not saved.get("frames"):
+            return self._PeerOperationResult(True)
+        workspace = self._peerWorkspaces.model(runtime.identity)
+        current = workspace.serialize_layout()
+        saved_frames = saved.get("frames", [])
+        current_frames = current.get("frames", [])
+        saved_groups = [
+            group
+            for frame in saved_frames
+            for group in frame.get("groups", [])
+        ]
+        current_groups = [
+            group
+            for frame in current_frames
+            for group in frame.get("groups", [])
+        ]
+        saved_panes = [
+            pane
+            for group in saved_groups
+            for pane in group.get("panes", [])
+        ]
+        current_panes = [
+            pane
+            for group in current_groups
+            for pane in group.get("panes", [])
+        ]
+        if not (
+            len(saved_frames) == len(current_frames)
+            and len(saved_groups) == len(current_groups)
+            and len(saved_panes) == len(current_panes)
+        ):
+            return self._PeerOperationResult(False, "layout identity counts differ")
+        frame_ids = dict(
+            zip(
+                (frame["id"] for frame in saved_frames),
+                (frame["id"] for frame in current_frames),
+            )
+        )
+        group_ids = dict(
+            zip(
+                (group["id"] for group in saved_groups),
+                (group["id"] for group in current_groups),
+            )
+        )
+        pane_ids = dict(zip(saved_panes, current_panes))
+
+        def remap_node(node):
+            if node.get("type") == "group":
+                return {**node, "group_id": group_ids[node["group_id"]]}
+            return {**node, "children": [remap_node(child) for child in node["children"]]}
+
+        translated = {
+            "schema": saved.get("schema", 1),
+            "active_pane_id": pane_ids.get(saved.get("active_pane_id")),
+            "frames": [],
+        }
+        for frame in saved_frames:
+            translated["frames"].append(
+                {
+                    **frame,
+                    "id": frame_ids[frame["id"]],
+                    "root": remap_node(frame["root"]),
+                    "groups": [
+                        {
+                            **group,
+                            "id": group_ids[group["id"]],
+                            "panes": [pane_ids[pane] for pane in group["panes"]],
+                            "active_pane_id": pane_ids.get(group.get("active_pane_id")),
+                        }
+                        for group in frame["groups"]
+                    ],
+                }
+            )
+        result = workspace.restore_layout(translated)
+        return result
 
     @classmethod
     def _peerJsonValue(cls, value):
@@ -1813,8 +1915,75 @@ class MainWindow(_ApplicationHostBase):
         return merged
 
     def _peerRuntimeFrameWindows(self):
-        self._peerBackend._refresh_live_frame_windows()
-        return tuple(self._peerRuntime.frame_windows.values())
+        runtime = self._peerActiveRuntime()
+        runtime.backend._refresh_live_frame_windows()
+        return tuple(runtime.frame_windows.values())
+
+    def _peerActiveRuntime(self):
+        identity = self._peerWorkspaces.active_workspace_id
+        if identity is None:
+            return self._peerRuntime
+        try:
+            return self._peerRuntimeCatalog.runtime(identity)
+        except KeyError:
+            return self._peerRuntime
+
+    def _peerFrameWindow(self, frame_id):
+        runtime = self._peerActiveRuntime()
+        window = runtime.frame_windows.get(frame_id)
+        if window is not None:
+            return window
+        for identity in self._peerRuntimeCatalog.identities:
+            window = self._peerRuntimeCatalog.runtime(identity).frame_windows.get(
+                frame_id
+            )
+            if window is not None:
+                return window
+        return None
+
+    def _activatePeerWorkspace(self, workspace_id):
+        result = self._peerWorkspaces.activate_workspace(workspace_id)
+        if not result.applied:
+            return result
+        runtime = self._peerRuntimeCatalog.runtime(workspace_id)
+        runtime.backend._refresh_live_frame_windows()
+        for window in runtime.frame_windows.values():
+            window.show()
+            window.raise_()
+            window.activateWindow()
+        self._reconcilePeerChrome(runtime.frame_windows.values())
+        return result
+
+    def _createPeerWorkspace(self, name="Workspace", persistence_location=None):
+        identity = self._PeerNewIdentity(self._PeerIdentityKind.WORKSPACE)
+        runtime = self._peerRuntimeCatalog.create(
+            identity=identity,
+            backend_factory=self._PeerQtAdsBackend,
+            model_factory=lambda backend, workspace_id: self._PeerWorkspaceModel(
+                backend, workspace_id=workspace_id
+            ),
+            frame_close_request=self._requestPeerFrameClose,
+            pane_close_request=self._requestPeerPaneClose,
+        )
+        try:
+            self._peerWorkspaces.add_workspace(
+                runtime.model,
+                identity=identity,
+                name=name,
+                persistence_location=persistence_location,
+            )
+            host = self._createEditorHostForRuntime(runtime)
+            pyzo.editors.addGroup(host)
+            item = host.newFile()
+            pyzo.editors.setActiveGroup(host)
+            self._bindPeerEditorLifecycle(host)
+            self._activatePeerWorkspace(identity)
+            return identity
+        except Exception:
+            if identity in self._peerWorkspaces.workspace_ids:
+                self._peerWorkspaces.remove_workspace(identity)
+            self._peerRuntimeCatalog.dispose(identity)
+            raise
 
     def _reconcilePeerChrome(self, windows=None):
         if not self._peerFrameMode:
@@ -1832,6 +2001,18 @@ class MainWindow(_ApplicationHostBase):
         # an interpreter; execution affinity needs its own explicit resolver.
         if self._peerFrameMode and dock_widget is not None:
             self._projectPeerFrameMetadata(dock_widget)
+        if self._peerFrameMode:
+            for identity in self._peerRuntimeCatalog.identities:
+                runtime = self._peerRuntimeCatalog.runtime(identity)
+                if dock_widget not in runtime.backend.docks.values():
+                    continue
+                pane_id = runtime.backend._pane_id_from_dock(dock_widget)
+                self._peerWorkspaces.adopt_backend_activation(identity, pane_id)
+                for host, dock in runtime.editor_hosts.items():
+                    if dock is dock_widget:
+                        pyzo.editors.setActiveGroup(host)
+                        return
+                return
         for host, dock in self._editorHosts.items():
             if dock_widget is dock:
                 pyzo.editors.setActiveGroup(host)

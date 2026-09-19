@@ -134,6 +134,7 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         metadata=metadata,
         panes=panes,
         workspace_coordinator=workspaces,
+        create_workspace=lambda name, location: ("create", name, location),
         document_resources=documents,
     )
 
@@ -149,6 +150,15 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.workspaces.activate("workspace-b") == (
         "activate",
         "workspace-b",
+    )
+    assert controller.workspaces.open("workspace-b") == (
+        "activate",
+        "workspace-b",
+    )
+    assert controller.workspaces.create("Workspace B", "/projects/b") == (
+        "create",
+        "Workspace B",
+        "/projects/b",
     )
     assert controller.workspaces.activate_pane("workspace-b", "pane-b") == (
         "activate-pane",

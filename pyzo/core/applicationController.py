@@ -26,8 +26,10 @@ class WorkspaceAccess:
 class WorkspaceCollectionAccess:
     """Expose concurrent workspace identity without leaking mutable registries."""
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator, activate=None, create=None):
         self._coordinator = coordinator
+        self._activate = activate or coordinator.activate_workspace
+        self._create = create
 
     @property
     def identities(self):
@@ -46,12 +48,24 @@ class WorkspaceCollectionAccess:
     def activate(self, workspace_id):
         """Activate an explicitly addressed workspace without focus guessing."""
 
-        return self._coordinator.activate_workspace(workspace_id)
+        return self._activate(workspace_id)
 
     def activate_pane(self, workspace_id, pane_id):
         """Activate a pane only when it belongs to the addressed workspace."""
 
         return self._coordinator.activate_pane(workspace_id, pane_id)
+
+    def open(self, workspace_id):
+        """Open an already-known workspace by explicit identity."""
+
+        return self.activate(workspace_id)
+
+    def create(self, name="Workspace", persistence_location=None):
+        """Create a named workspace through the application owner."""
+
+        if self._create is None:
+            raise RuntimeError("workspace creation is not attached")
+        return self._create(name, persistence_location)
 
     def context_for(self, workspace_id, pane_id=None):
         """Resolve a workspace-addressed context without active fallback."""
@@ -559,6 +573,8 @@ class PeerApplicationController(QtCore.QObject):
         metadata,
         panes,
         workspace_coordinator=None,
+        activate_workspace=None,
+        create_workspace=None,
         document_resources=None,
         retention_edit=None,
         reopen_retained_buffer=None,
@@ -567,7 +583,11 @@ class PeerApplicationController(QtCore.QObject):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
         self.workspaces = (
-            WorkspaceCollectionAccess(workspace_coordinator)
+            WorkspaceCollectionAccess(
+                workspace_coordinator,
+                activate_workspace,
+                create_workspace,
+            )
             if workspace_coordinator is not None
             else None
         )
