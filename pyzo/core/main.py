@@ -467,10 +467,11 @@ class _PeerPaneFocusFilter(QtCore.QObject):
 class _PyzoEditorDocumentLifecycle:
     """Adapt one current Pyzo document to application lifecycle ownership."""
 
-    def __init__(self, main_window, pane_id, item):
+    def __init__(self, main_window, pane_id, item, document_id):
         self._mainWindow = main_window
         self._paneId = pane_id
         self._item = item
+        self._shared_document_id = document_id
 
     def is_dirty(self):
         return self._item.dirty
@@ -2415,7 +2416,7 @@ class MainWindow(_ApplicationHostBase):
             self._peerDocumentResources.set_main(
                 runtime.identity, document_id
             )
-        lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item)
+        lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item, document_id)
         policy = self._peerDocumentViews.register_view(
             pane_id,
             document_id,
