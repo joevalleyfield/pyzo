@@ -282,7 +282,9 @@ class PyzoEditor(BaseTextCtrl):
         self.textChanged.connect(self._onModified)
 
         # This timer is used to hide the marker that shows which code is executed
-        self._showRunCursorTimer = QtCore.QTimer()
+        self._showRunCursorTimer = QtCore.QTimer(self)
+        self._showRunCursorTimer.setSingleShot(True)
+        self._showRunCursorTimer.timeout.connect(self._clearRunCursor)
 
         # Add context menu
         self._menu = EditorContextMenu(self)
@@ -436,7 +438,10 @@ class PyzoEditor(BaseTextCtrl):
         extraSelection.format.setBackground(QtCore.Qt.GlobalColor.gray)
         self.setExtraSelections([extraSelection])
 
-        self._showRunCursorTimer.singleShot(200, lambda: self.setExtraSelections([]))
+        self._showRunCursorTimer.start(200)
+
+    def _clearRunCursor(self):
+        self.setExtraSelections([])
 
     def id(self):
         """Get an id of this editor. This is the filename, or for tmp files, the name."""
