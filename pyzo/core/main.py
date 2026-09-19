@@ -2901,6 +2901,7 @@ class MainWindow(_ApplicationHostBase):
         self._peerShutdownCoordinator = self._ApplicationShutdownCoordinator(
             confirm_exit=self._confirmPeerApplicationExit,
             request_workspace_shutdown=self._requestPeerWorkspaceShutdown,
+            prepare_cleanup=pyzo.workspacePersistence.save,
             cleanup_steps=(
                 self._PeerCleanupStep("config", pyzo.saveConfig),
                 self._PeerCleanupStep("history", pyzo.command_history.save),
