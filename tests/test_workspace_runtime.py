@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from pyzo.core.workspaceRuntime import WorkspaceRuntime
+from spikes.peer_frames.contract import WorkspaceModel
+from spikes.peer_frames.fake_backend import FakeBackend as CoordinatorBackend
+from spikes.peer_frames.identity import IdentityKind, new_identity
+from spikes.peer_frames.workspace_coordinator import WorkspaceCoordinator
 
 
 class FakeBackend:
@@ -58,6 +62,50 @@ class WorkspaceRuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual(backend.close_count, 1)
+
+    def test_two_runtimes_keep_native_ownership_distinct_and_share_services(self):
+        coordinator = WorkspaceCoordinator()
+        documents = object()
+        undo = object()
+        backends = [FakeBackend(), FakeBackend()]
+        identities = [new_identity(IdentityKind.WORKSPACE) for _ in backends]
+
+        runtimes = [
+            WorkspaceRuntime.create(
+                identity=identity,
+                backend_factory=lambda backend=backend: backend,
+                model_factory=lambda _backend, identity: WorkspaceModel(
+                    CoordinatorBackend(), workspace_id=identity
+                ),
+                shared_services={"documents": documents, "undo": undo},
+            )
+            for identity, backend in zip(identities, backends)
+        ]
+
+        try:
+            ids = [
+                coordinator.add_workspace(
+                    runtime.model,
+                    name=str(runtime.identity),
+                    identity=runtime.identity,
+                )
+                for runtime in runtimes
+            ]
+            self.assertEqual(ids, identities)
+            self.assertIsNot(runtimes[0].backend, runtimes[1].backend)
+            self.assertIs(runtimes[0].shared_services["documents"], documents)
+            self.assertIs(runtimes[1].shared_services["documents"], documents)
+            self.assertIs(runtimes[0].shared_services["undo"], undo)
+            self.assertIs(runtimes[1].shared_services["undo"], undo)
+            self.assertEqual(
+                coordinator.workspace_ids, tuple(identities)
+            )
+        finally:
+            for runtime in runtimes:
+                self.assertTrue(
+                    coordinator.remove_workspace(runtime.identity).applied
+                )
+                runtime.dispose()
 
 
 if __name__ == "__main__":

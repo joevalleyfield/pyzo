@@ -8,16 +8,27 @@ workspace, including its host lookup tables and construction cleanup.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Mapping
 
 
 class WorkspaceRuntime:
     """A single workspace's backend, model, and native host ownership."""
 
-    def __init__(self, *, identity: Any, backend: Any, model: Any):
+    def __init__(
+        self,
+        *,
+        identity: Any,
+        backend: Any,
+        model: Any,
+        shared_services: Mapping[str, Any] | None = None,
+    ):
         self.identity = identity
         self.backend = backend
         self.model = model
+        # Documents, undo authority, and persistence are application-owned.
+        # A runtime keeps explicit references to those shared services but
+        # never disposes them with its native workspace projection.
+        self.shared_services = dict(shared_services or {})
         self.editor_hosts: dict[Any, Any] = {}
         self.shell_hosts: dict[Any, Any] = {}
         self.editor_host_serial = 0
@@ -33,6 +44,7 @@ class WorkspaceRuntime:
         model_factory: Callable[[Any, Any], Any],
         frame_close_request: Callable[..., Any] | None = None,
         pane_close_request: Callable[..., Any] | None = None,
+        shared_services: Mapping[str, Any] | None = None,
     ) -> "WorkspaceRuntime":
         """Construct and bind a runtime, cleaning a partial backend on error."""
 
@@ -45,7 +57,12 @@ class WorkspaceRuntime:
             if close is not None:
                 close()
             raise
-        return cls(identity=identity, backend=backend, model=model)
+        return cls(
+            identity=identity,
+            backend=backend,
+            model=model,
+            shared_services=shared_services,
+        )
 
     @property
     def frame_windows(self):
@@ -62,4 +79,3 @@ class WorkspaceRuntime:
         self.editor_hosts.clear()
         self.shell_hosts.clear()
         self.backend.close()
-
