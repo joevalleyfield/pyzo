@@ -970,6 +970,8 @@ class MainWindow(_ApplicationHostBase):
                 candidate_identity = ApplicationIdentity(
                     IdentityKind.WORKSPACE, persisted_workspace_id
                 )
+            else:
+                candidate_identity = new_identity(IdentityKind.WORKSPACE)
             self._PeerDocumentViewState = DocumentViewState
             self._peerRuntimeCatalog = WorkspaceRuntimeCatalog()
             self._peerRuntime = self._peerRuntimeCatalog.create(
