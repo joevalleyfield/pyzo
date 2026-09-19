@@ -1550,6 +1550,7 @@ class MainWindow(_ApplicationHostBase):
         if self._peerPersistedEmptyWorkspaceSet:
             return
         if self._peerFactoryStartup:
+            self._restorePersistedPeerEditors()
             self._peerApplicationLifecycle.initialize_default_frame()
             return
         self._restorePersistedPeerEditors()
@@ -1575,12 +1576,16 @@ class MainWindow(_ApplicationHostBase):
         views = resources.get("views", {})
         if not isinstance(documents, dict) or not isinstance(views, dict):
             return
+        loaded_workspace_ids = {
+            str(identity)
+            for identity in self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
+        }
         persisted_views = [
             (view_id, view)
             for view_id, view in views.items()
             if isinstance(view_id, str)
             and isinstance(view, dict)
-            and view.get("workspace_id") == str(self._peerWorkspaceIdentity)
+            and view.get("workspace_id") in loaded_workspace_ids
         ]
         if not persisted_views:
             return
@@ -1591,7 +1596,17 @@ class MainWindow(_ApplicationHostBase):
                 record = documents.get(document_id)
                 if not isinstance(document_id, str) or not isinstance(record, dict):
                     continue
-                item = pyzo.editors.newFile()
+                workspace_id = str(view["workspace_id"])
+                runtime_identity = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.WORKSPACE, workspace_id
+                )
+                runtime = self._peerRuntimeCatalog.runtime(runtime_identity)
+                if runtime is self._peerRuntime:
+                    item = pyzo.editors.newFile()
+                else:
+                    host = self._createEditorHostForRuntime(runtime)
+                    pyzo.editors.addGroup(host)
+                    item = host.newFile()
                 editor = item.editor
                 path = record.get("path")
                 if isinstance(path, str):
@@ -1942,38 +1957,54 @@ class MainWindow(_ApplicationHostBase):
         print("Pyzo ADS foreground-window ordering smoke test passed")
 
     def _createEditorHost(self):
-        runtime = getattr(self, "_peerRuntime", None)
+        return self._createEditorHostForRuntime(
+            getattr(self, "_peerRuntime", None)
+        )
+
+    def _createEditorHostForRuntime(self, runtime):
         if runtime is not None:
             runtime.editor_host_serial += 1
             serial = runtime.editor_host_serial
+            backend = runtime.backend
+            workspace = self._peerWorkspaces.model(runtime.identity)
+            hosts = runtime.editor_hosts
         else:
             self._editorHostSerial += 1
             serial = self._editorHostSerial
+            backend = self._dockManager
+            workspace = self._peerWorkspace
+            hosts = self._editorHosts
         target_dock = None
-        if self._peerFrameMode:
+        if self._peerFrameMode and runtime is self._peerRuntime:
             editor_service = getattr(pyzo, "editors", None)
             active_host = getattr(editor_service, "activeGroup", None)
             target_dock = self._editorHosts.get(active_host)
-        dock = self._QtAds.CDockWidget(self._dockManager, "Untitled")
+        dock = self._QtAds.CDockWidget(backend.manager, "Untitled")
         dock.setObjectName(f"pyzo-editor-dock-{serial}")
         host = self._EditorTabs(dock)
         host.setObjectName(f"pyzo-editor-host-{serial}")
         dock.setWidget(host)
         if self._peerFrameMode:
+            pane_id = (
+                f"editor-{serial}"
+                if runtime is self._peerRuntime
+                else f"editor-{runtime.identity}-{serial}"
+            )
             self._registerPeerDock(
-                f"editor-{serial}",
+                pane_id,
                 self._PeerPaneKind.EDITOR,
                 "Untitled",
                 dock,
+                runtime=runtime,
             )
             if target_dock is not None:
-                pane_id = self._peerBackend._pane_id_from_dock(dock)
+                pane_id = backend._pane_id_from_dock(dock)
                 target_id = self._peerBackend._pane_id_from_dock(target_dock)
                 if (
-                    target_id in self._peerWorkspace.panes
-                    and self._peerWorkspace.is_pane_placed(target_id)
+                    target_id in workspace.panes
+                    and workspace.is_pane_placed(target_id)
                 ):
-                    result = self._peerWorkspace.tab(pane_id, target_id)
+                    result = workspace.tab(pane_id, target_id)
                     if not result.applied:
                         self._logPeerDefaultFrameError(
                             "new editor routing retained its temporary frame: "
@@ -1991,7 +2022,7 @@ class MainWindow(_ApplicationHostBase):
                     dock,
                     active_dock.dockAreaWidget(),
                 )
-        self._editorHosts[host] = dock
+        hosts[host] = dock
         host._tabs.fileTabsChanged.connect(
             lambda host=host: self._editorHostContentChanged(host)
         )
@@ -2064,15 +2095,25 @@ class MainWindow(_ApplicationHostBase):
                     return candidate
         return None
 
+    def _peerRuntimeForEditorHost(self, host):
+        for identity in self._peerRuntimeCatalog.identities:
+            runtime = self._peerRuntimeCatalog.runtime(identity)
+            if host in runtime.editor_hosts:
+                return runtime
+        return self._peerRuntime
+
     def _bindPeerEditorLifecycle(self, host):
         if self._peerEditorLifecycleMigration:
             return
-        dock = self._editorHosts.get(host)
+        runtime = self._peerRuntimeForEditorHost(host)
+        dock = runtime.editor_hosts.get(host)
         item = host._tabs.currentItem()
         if dock is None or item is None:
             return
-        pane_id = self._peerBackend._pane_id_from_dock(dock)
-        if pane_id not in self._peerWorkspace.panes:
+        backend = runtime.backend
+        workspace = self._peerWorkspaces.model(runtime.identity)
+        pane_id = backend._pane_id_from_dock(dock)
+        if pane_id not in workspace.panes:
             return
         document_id = getattr(item.editor, "_peerDocumentIdentity", None)
         if document_id is None:
@@ -2114,7 +2155,7 @@ class MainWindow(_ApplicationHostBase):
             cursor = item.editor.textCursor()
             self._peerDocumentResources.open_view(
                 document_id,
-                self._peerWorkspaceIdentity,
+                runtime.identity,
                 identity=view_id,
                 state=self._PeerDocumentViewState(
                     cursor=int(cursor.position()),
@@ -2130,11 +2171,11 @@ class MainWindow(_ApplicationHostBase):
         mains = self._peerPersistedDocumentResources.get("mains", {})
         if (
             isinstance(mains, dict)
-            and mains.get(str(self._peerWorkspaceIdentity)) == str(document_id)
+            and mains.get(str(runtime.identity)) == str(document_id)
             and item.filename
         ):
             self._peerDocumentResources.set_main(
-                self._peerWorkspaceIdentity, document_id
+                runtime.identity, document_id
             )
         lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item)
         policy = self._peerDocumentViews.register_view(
@@ -2142,13 +2183,13 @@ class MainWindow(_ApplicationHostBase):
             document_id,
             lifecycle,
             is_pinned=lambda item=item: item.pinned,
-            workspace_id=self._peerWorkspaceIdentity,
+            workspace_id=runtime.identity,
             close_view=lambda view_id=view_id: self._peerDocumentResources.close_view(
                 view_id
             ),
             retain_on_final_close=True,
         )
-        result = self._peerWorkspace.set_close_policy(pane_id, policy)
+        result = workspace.set_close_policy(pane_id, policy)
         if not result.applied:
             self._peerDocumentViews.forget_view(pane_id)
             self._peerDocumentResources.close_view(view_id)
@@ -2931,7 +2972,10 @@ class MainWindow(_ApplicationHostBase):
         try:
             if pyzo.editors.getCurrentEditor() is None:
                 pyzo.editors.newFile()
-            hosts = list(pyzo.editors.groups)
+            primary_hosts = self._peerRuntime.editor_hosts
+            hosts = [
+                host for host in pyzo.editors.groups if host in primary_hosts
+            ]
             active_host = pyzo.editors.activeGroup
             if active_host in hosts:
                 hosts.remove(active_host)
@@ -4031,21 +4075,24 @@ class MainWindow(_ApplicationHostBase):
                 self._dockManager.removeDockWidget(dock)
                 dock.deleteLater()
 
-    def _registerPeerDock(self, pane_id, pane_kind, title, dock):
-        self._peerBackend.register_dock(pane_id, dock)
+    def _registerPeerDock(self, pane_id, pane_kind, title, dock, *, runtime=None):
+        runtime = runtime or self._peerRuntime
+        backend = runtime.backend
+        workspace = self._peerWorkspaces.model(runtime.identity)
+        backend.register_dock(pane_id, dock)
         result = self._peerWorkspaces.register_pane(
-            self._peerWorkspaceIdentity,
+            runtime.identity,
             self._PeerPaneDescriptor(pane_id, pane_kind, title),
         )
         if not result.applied:
             raise RuntimeError(result.detail)
-        result = self._peerWorkspace.create_frame(
+        result = workspace.create_frame(
             pane_id, f"pyzo-frame-{pane_id}"
         )
         if not result.applied:
             raise RuntimeError(result.detail)
         dock.setWindowTitle(title)
-        self._peerBackend.frame_windows[f"pyzo-frame-{pane_id}"].setWindowTitle(
+        backend.frame_windows[f"pyzo-frame-{pane_id}"].setWindowTitle(
             title
         )
 

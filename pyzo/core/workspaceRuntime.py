@@ -137,11 +137,11 @@ class WorkspaceRuntimeCatalog:
             except Exception as error:
                 failures[identity] = str(error) or type(error).__name__
                 continue
-            if runtime.identity != identity:
+            if str(runtime.identity) != str(identity):
                 runtime.dispose()
                 failures[identity] = "constructed runtime identity mismatch"
                 continue
-            self._runtimes[identity] = runtime
+            self._runtimes[runtime.identity] = runtime
             restored[identity] = runtime
         return restored, failures
 
