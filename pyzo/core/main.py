@@ -1043,6 +1043,7 @@ class MainWindow(_ApplicationHostBase):
                     raise
                 return runtime
 
+            self._peerRestoreRuntimeFactory = restore_runtime
             restored, failures = self._peerRuntimeCatalog.restore_loaded(
                 {
                     str(identity): record
@@ -1289,6 +1290,8 @@ class MainWindow(_ApplicationHostBase):
                 workspace_coordinator=self._peerWorkspaces,
                 activate_workspace=self._activatePeerWorkspace,
                 create_workspace=self._createPeerWorkspace,
+                workspace_restore_failures=lambda: self._peerWorkspaceRestoreFailures,
+                retry_workspace_restore=self._retryPeerWorkspaceRestore,
                 document_resources=self._peerDocumentResources,
                 retention_edit=lambda: self._peerRetentionCoordinator.edit(),
                 reopen_retained_buffer=self.reopenPeerRetainedBuffer,
@@ -1579,7 +1582,7 @@ class MainWindow(_ApplicationHostBase):
                 print("Could not restore peer workspace session: " + result.detail)
         self._peerApplicationLifecycle.initialize_default_frame()
 
-    def _restorePersistedPeerEditors(self):
+    def _restorePersistedPeerEditors(self, workspace_ids=None):
         """Recreate persisted open editor views before restoring their layout."""
 
         resources = self._peerPersistedDocumentResources
@@ -1589,7 +1592,11 @@ class MainWindow(_ApplicationHostBase):
             return
         loaded_workspace_ids = {
             str(identity)
-            for identity in self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
+            for identity in (
+                workspace_ids
+                if workspace_ids is not None
+                else self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
+            )
         }
         persisted_views = [
             (view_id, view)
@@ -1753,6 +1760,28 @@ class MainWindow(_ApplicationHostBase):
             )
         result = workspace.restore_layout(translated)
         return result
+
+    def _retryPeerWorkspaceRestore(self, workspace_id):
+        identity = self._PeerApplicationIdentity(
+            self._PeerIdentityKind.WORKSPACE, str(workspace_id)
+        )
+        if identity in self._peerWorkspaces.workspace_ids:
+            return self._PeerOperationResult(False, "workspace is already loaded")
+        if str(workspace_id) not in self._peerWorkspaceRestoreFailures:
+            return self._PeerOperationResult(False, "workspace has no restore failure")
+        record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+            str(workspace_id)
+        )
+        if not isinstance(record, dict):
+            return self._PeerOperationResult(False, "workspace record is unavailable")
+        try:
+            self._peerRestoreRuntimeFactory(str(workspace_id), record)
+            self._restorePersistedPeerEditors((str(workspace_id),))
+        except Exception as error:
+            self._peerWorkspaceRestoreFailures[str(workspace_id)] = str(error)
+            return self._PeerOperationResult(False, str(error))
+        self._peerWorkspaceRestoreFailures.pop(str(workspace_id), None)
+        return self._PeerOperationResult(True)
 
     @classmethod
     def _peerJsonValue(cls, value):

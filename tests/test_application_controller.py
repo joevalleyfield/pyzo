@@ -135,6 +135,8 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         panes=panes,
         workspace_coordinator=workspaces,
         create_workspace=lambda name, location: ("create", name, location),
+        workspace_restore_failures=lambda: {"workspace-b": "broken"},
+        retry_workspace_restore=lambda workspace_id: ("retry", workspace_id),
         document_resources=documents,
     )
 
@@ -159,6 +161,11 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         "create",
         "Workspace B",
         "/projects/b",
+    )
+    assert controller.workspaces.restore_failures == {"workspace-b": "broken"}
+    assert controller.workspaces.retry_restore("workspace-b") == (
+        "retry",
+        "workspace-b",
     )
     assert controller.workspaces.activate_pane("workspace-b", "pane-b") == (
         "activate-pane",

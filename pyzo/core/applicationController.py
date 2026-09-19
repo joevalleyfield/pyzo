@@ -26,10 +26,16 @@ class WorkspaceAccess:
 class WorkspaceCollectionAccess:
     """Expose concurrent workspace identity without leaking mutable registries."""
 
-    def __init__(self, coordinator, activate=None, create=None):
+    def __init__(self, coordinator, activate=None, create=None, failures=None, retry=None):
         self._coordinator = coordinator
         self._activate = activate or coordinator.activate_workspace
         self._create = create
+        self._failures = failures
+        self._retry = retry
+
+    @property
+    def restore_failures(self):
+        return dict(self._failures() if self._failures is not None else {})
 
     @property
     def identities(self):
@@ -66,6 +72,11 @@ class WorkspaceCollectionAccess:
         if self._create is None:
             raise RuntimeError("workspace creation is not attached")
         return self._create(name, persistence_location)
+
+    def retry_restore(self, workspace_id):
+        if self._retry is None:
+            raise RuntimeError("workspace restore retry is not attached")
+        return self._retry(workspace_id)
 
     def context_for(self, workspace_id, pane_id=None):
         """Resolve a workspace-addressed context without active fallback."""
@@ -575,6 +586,8 @@ class PeerApplicationController(QtCore.QObject):
         workspace_coordinator=None,
         activate_workspace=None,
         create_workspace=None,
+        workspace_restore_failures=None,
+        retry_workspace_restore=None,
         document_resources=None,
         retention_edit=None,
         reopen_retained_buffer=None,
@@ -587,6 +600,8 @@ class PeerApplicationController(QtCore.QObject):
                 workspace_coordinator,
                 activate_workspace,
                 create_workspace,
+                workspace_restore_failures,
+                retry_workspace_restore,
             )
             if workspace_coordinator is not None
             else None
