@@ -26,10 +26,21 @@ class WorkspaceAccess:
 class WorkspaceCollectionAccess:
     """Expose concurrent workspace identity without leaking mutable registries."""
 
-    def __init__(self, coordinator, activate=None, create=None, failures=None, retry=None):
+    def __init__(
+        self,
+        coordinator,
+        activate=None,
+        create=None,
+        close=None,
+        reopen=None,
+        failures=None,
+        retry=None,
+    ):
         self._coordinator = coordinator
         self._activate = activate or coordinator.activate_workspace
         self._create = create
+        self._close = close
+        self._reopen = reopen
         self._failures = failures
         self._retry = retry
 
@@ -72,6 +83,16 @@ class WorkspaceCollectionAccess:
         if self._create is None:
             raise RuntimeError("workspace creation is not attached")
         return self._create(name, persistence_location)
+
+    def close(self, workspace_id):
+        if self._close is None:
+            raise RuntimeError("workspace close is not attached")
+        return self._close(workspace_id)
+
+    def reopen(self, workspace_id):
+        if self._reopen is None:
+            raise RuntimeError("workspace reopen is not attached")
+        return self._reopen(workspace_id)
 
     def retry_restore(self, workspace_id):
         if self._retry is None:
@@ -586,6 +607,8 @@ class PeerApplicationController(QtCore.QObject):
         workspace_coordinator=None,
         activate_workspace=None,
         create_workspace=None,
+        close_workspace=None,
+        reopen_workspace=None,
         workspace_restore_failures=None,
         retry_workspace_restore=None,
         document_resources=None,
@@ -600,6 +623,8 @@ class PeerApplicationController(QtCore.QObject):
                 workspace_coordinator,
                 activate_workspace,
                 create_workspace,
+                close_workspace,
+                reopen_workspace,
                 workspace_restore_failures,
                 retry_workspace_restore,
             )

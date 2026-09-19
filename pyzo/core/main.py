@@ -1293,6 +1293,8 @@ class MainWindow(_ApplicationHostBase):
                 workspace_coordinator=self._peerWorkspaces,
                 activate_workspace=self._activatePeerWorkspace,
                 create_workspace=self._createPeerWorkspace,
+                close_workspace=self._closePeerWorkspace,
+                reopen_workspace=self._reopenPeerWorkspace,
                 workspace_restore_failures=lambda: self._peerWorkspaceRestoreFailures,
                 retry_workspace_restore=self._retryPeerWorkspaceRestore,
                 document_resources=self._peerDocumentResources,
@@ -1812,6 +1814,88 @@ class MainWindow(_ApplicationHostBase):
         self._peerWorkspaceRestoreFailures.pop(str(workspace_id), None)
         return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
 
+    def _closePeerWorkspace(self, workspace_id):
+        identity = self._PeerApplicationIdentity(
+            self._PeerIdentityKind.WORKSPACE, str(workspace_id)
+        )
+        if identity not in self._peerWorkspaces.workspace_ids:
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, "workspace is not loaded"
+            )
+        runtime = self._peerRuntimeCatalog.runtime(identity)
+        survivors = tuple(
+            candidate
+            for candidate in self._peerRuntimeCatalog.identities
+            if candidate != identity
+        )
+        if not survivors:
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.UNSUPPORTED,
+                "at least one workspace must remain loaded",
+            )
+        result = runtime.model.request_shutdown(self._resolvePeerClose)
+        if not result.applied:
+            return result
+        while runtime.model.panes:
+            pane_id = next(iter(runtime.model.panes))
+            result = runtime.model.request_close_pane(
+                pane_id, self._resolvePeerClose
+            )
+            if not result.applied:
+                context = runtime.model.resolve_pane_context(pane_id)
+                if context is not None and context.frame_id is None:
+                    runtime.model.release_pane(pane_id)
+                    continue
+            if not result.applied:
+                return result
+        removed = self._peerWorkspaces.remove_workspace(identity)
+        if not removed.applied:
+            return removed
+        self._peerRuntimeCatalog.dispose(identity)
+        if identity == self._peerRuntime.identity:
+            self._peerRuntime = self._peerRuntimeCatalog.runtime(survivors[0])
+            self._peerBackend = self._peerRuntime.backend
+            self._peerWorkspaceIdentity = self._peerRuntime.identity
+            self._peerWorkspace = self._peerRuntime.model
+            self._editorHosts = self._peerRuntime.editor_hosts
+            self._shellHosts = self._peerRuntime.shell_hosts
+        self._peerWorkspaces.activate_workspace(survivors[0])
+        self._savePeerWorkspacePersistence(
+            preserve_workspace_ids=(str(identity),)
+        )
+        self._reconcilePeerChrome(self._peerRuntimeFrameWindows())
+        return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
+
+    def _reopenPeerWorkspace(self, workspace_id):
+        identity = self._PeerApplicationIdentity(
+            self._PeerIdentityKind.WORKSPACE, str(workspace_id)
+        )
+        if identity in self._peerWorkspaces.workspace_ids:
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, "workspace is already loaded"
+            )
+        record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+            str(workspace_id)
+        )
+        if not isinstance(record, dict):
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, "workspace record is unavailable"
+            )
+        try:
+            self._peerRestoreRuntimeFactory(str(workspace_id), record)
+            self._restorePersistedPeerEditors((str(workspace_id),))
+            self._peerWorkspaces.activate_workspace(identity)
+            self._activatePeerWorkspace(identity)
+            self._savePeerWorkspacePersistence()
+        except Exception as error:
+            if identity in self._peerWorkspaces.workspace_ids:
+                self._peerWorkspaces.remove_workspace(identity)
+            self._peerRuntimeCatalog.dispose(identity)
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, str(error)
+            )
+        return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
+
     @classmethod
     def _peerJsonValue(cls, value):
         if value is None or isinstance(value, (bool, int, float, str)):
@@ -1837,7 +1921,9 @@ class MainWindow(_ApplicationHostBase):
 
         return self._peerJsonValue(pyzo.config)
 
-    def _savePeerWorkspacePersistence(self, document_snapshot=None):
+    def _savePeerWorkspacePersistence(
+        self, document_snapshot=None, preserve_workspace_ids=()
+    ):
         if self._peerWorkspacePersistenceBlocked:
             raise RuntimeError(
                 "workspace persistence is unavailable; retry restore before saving"
@@ -1900,6 +1986,7 @@ class MainWindow(_ApplicationHostBase):
             document_snapshot
             if document_snapshot is not None
             else pyzo.application.documents.persistence_snapshot(),
+            preserve_workspace_ids=preserve_workspace_ids,
         )
         state = self._WorkspacePersistenceState(
             tuple(loaded_ids),
@@ -1926,7 +2013,9 @@ class MainWindow(_ApplicationHostBase):
         else:
             complete(self._peerRetentionCoordinator.state.revision)
 
-    def _mergePeerResourcePersistence(self, previous, current):
+    def _mergePeerResourcePersistence(
+        self, previous, current, *, preserve_workspace_ids=()
+    ):
         """Replace only this workspace's views/main while retaining shared peers."""
 
         workspace_id = str(self._peerWorkspaceIdentity)
@@ -1940,6 +2029,7 @@ class MainWindow(_ApplicationHostBase):
             if not (
                 isinstance(value, dict)
                 and value.get("workspace_id") == workspace_id
+                and value.get("workspace_id") not in preserve_workspace_ids
             )
         }
         views.update(deepcopy(dict(current.get("views", {}))))
@@ -1949,6 +2039,7 @@ class MainWindow(_ApplicationHostBase):
             if not (
                 isinstance(value, dict)
                 and value.get("workspace_id") == workspace_id
+                and value.get("workspace_id") not in preserve_workspace_ids
             )
         }
         retained_views.update(
@@ -2341,6 +2432,13 @@ class MainWindow(_ApplicationHostBase):
                 return runtime
         return self._peerRuntime
 
+    def _peerRuntimeForShellHost(self, host):
+        for identity in self._peerRuntimeCatalog.identities:
+            runtime = self._peerRuntimeCatalog.runtime(identity)
+            if host in runtime.shell_hosts:
+                return runtime
+        return self._peerRuntime
+
     def _bindPeerEditorLifecycle(self, host):
         if self._peerEditorLifecycleMigration:
             return
@@ -2591,7 +2689,10 @@ class MainWindow(_ApplicationHostBase):
         )
 
     def _closeCommittedPeerEditor(self, pane_id, editor):
-        assert pane_id not in self._peerWorkspace.panes
+        host = pyzo.editors._group_for_editor(editor)
+        runtime = self._peerRuntimeForEditorHost(host)
+        assert runtime is not None
+        assert pane_id not in runtime.model.panes
         if pyzo.application is not None and pyzo.application.documents is not None:
             pyzo.application.documents.flush(editor)
             pyzo.application.documents.unbind(editor)
@@ -2693,12 +2794,16 @@ class MainWindow(_ApplicationHostBase):
         window.setWindowIcon(icon)
 
     def _removeEditorHost(self, host):
-        dock = self._editorHosts.pop(host, None)
+        runtime = self._peerRuntimeForEditorHost(host)
+        hosts = runtime.editor_hosts if runtime is not None else self._editorHosts
+        dock = hosts.pop(host, None)
         if dock is not None:
             if self._peerFrameMode:
-                pane_id = self._peerBackend._pane_id_from_dock(dock)
-                if pane_id in self._peerWorkspace.panes:
-                    self._removePeerDock(dock)
+                pane_id = runtime.backend._pane_id_from_dock(dock)
+                if pane_id in runtime.model.panes:
+                    result = runtime.model.request_close_pane(pane_id)
+                    if not result.applied:
+                        raise RuntimeError(result.detail)
             else:
                 self._dockManager.removeDockWidget(dock)
                 dock.deleteLater()
@@ -4304,13 +4409,17 @@ class MainWindow(_ApplicationHostBase):
         print("Pyzo dirty editor lifecycle matrix smoke test passed")
 
     def removeShellHost(self, host):
-        dock = self._shellHosts.pop(host, None)
+        runtime = self._peerRuntimeForShellHost(host)
+        hosts = runtime.shell_hosts if runtime is not None else self._shellHosts
+        dock = hosts.pop(host, None)
         if dock is not None:
             host.dispose()
             if self._peerFrameMode:
-                pane_id = self._peerBackend._pane_id_from_dock(dock)
-                if pane_id in self._peerWorkspace.panes:
-                    self._removePeerDock(dock)
+                pane_id = runtime.backend._pane_id_from_dock(dock)
+                if pane_id in runtime.model.panes:
+                    result = runtime.model.request_close_pane(pane_id)
+                    if not result.applied:
+                        raise RuntimeError(result.detail)
             else:
                 self._dockManager.removeDockWidget(dock)
                 dock.deleteLater()
@@ -4337,8 +4446,17 @@ class MainWindow(_ApplicationHostBase):
         )
 
     def _removePeerDock(self, dock):
-        pane_id = self._peerBackend._pane_id_from_dock(dock)
-        result = self._peerWorkspace.request_close_pane(pane_id)
+        runtime = next(
+            (
+                self._peerRuntimeCatalog.runtime(identity)
+                for identity in self._peerRuntimeCatalog.identities
+                if dock
+                in self._peerRuntimeCatalog.runtime(identity).backend.docks.values()
+            ),
+            self._peerRuntime,
+        )
+        pane_id = runtime.backend._pane_id_from_dock(dock)
+        result = runtime.model.request_close_pane(pane_id)
         if not result.applied:
             raise RuntimeError(result.detail)
 
