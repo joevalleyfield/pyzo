@@ -157,6 +157,35 @@ class WorkspaceRuntimeQtTests(unittest.TestCase):
             self.assertEqual(documents.resource(document_id).text, "changed")
             self.assertEqual(editors[0].toPlainText(), "changed")
             self.assertEqual(editors[1].toPlainText(), "changed")
+
+            adapter.unbind(editors[0])
+            self.assertTrue(documents.close_view(view_ids[0]))
+            editors[0].deleteLater()
+            self.assertEqual(documents.views_for_document(document_id), (view_ids[1],))
+            self.assertTrue(adapter.undo(editors[1]))
+            self.assertEqual(documents.resource(document_id).text, "start")
+            self.assertTrue(adapter.redo(editors[1]))
+            self.assertEqual(documents.resource(document_id).text, "changed")
+
+            adapter.unbind(editors[1])
+            self.assertTrue(documents.close_view(view_ids[1]))
+            self.assertEqual(
+                documents.retained_view(view_ids[1]).workspace_id, workspaces[1]
+            )
+            self.assertFalse(documents.resource(document_id).live)
+            reopened = documents.reopen_view(
+                document_id,
+                view_id=view_ids[1],
+                workspace_id=workspaces[1],
+            )
+            self.assertEqual(reopened, view_ids[1])
+            self.assertTrue(documents.resource(document_id).live)
+            with self.assertRaises(KeyError):
+                documents.reopen_view(
+                    document_id,
+                    view_id=view_ids[1],
+                    workspace_id=workspaces[1],
+                )
         finally:
             for editor in editors:
                 adapter.unbind(editor)
