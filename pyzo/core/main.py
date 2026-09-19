@@ -2045,6 +2045,16 @@ class MainWindow(_ApplicationHostBase):
         retained_views.update(
             deepcopy(dict(current.get("retained_views", {})))
         )
+        # A view identity has one authoritative persisted location.  A close
+        # can contribute the same descriptor to both collections while the
+        # live resource snapshot still contains its pre-close entry.  Retained
+        # state is the durable representation after closure, so remove the
+        # duplicate live entry before handing the snapshot to the registry.
+        views = {
+            identity: value
+            for identity, value in views.items()
+            if identity not in retained_views
+        }
         mains = deepcopy(dict(merged.get("mains", {})))
         mains.pop(workspace_id, None)
         mains.update(deepcopy(dict(current.get("mains", {}))))
