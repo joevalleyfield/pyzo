@@ -1598,23 +1598,30 @@ class MainWindow(_ApplicationHostBase):
             )
         workspace_id = str(self._peerWorkspaceIdentity)
         workspaces = deepcopy(dict(loaded.state.workspaces))
-        previous = deepcopy(dict(workspaces.get(workspace_id, {})))
-        extensions = deepcopy(previous.get("extensions", {}))
-        extensions["pyzo_peer_initialized"] = True
-        previous.update(
-            {
-                "schema": 1,
-                "identity": workspace_id,
-                "name": previous.get("name", "Default"),
-                "session": pyzo.workspaceSession.capture(),
-                "profile": deepcopy(previous.get("profile", {})),
-                "extensions": extensions,
-            }
-        )
-        workspaces[workspace_id] = previous
-        loaded_ids = loaded.state.loaded_workspace_ids
-        if workspace_id not in loaded_ids:
-            loaded_ids = (*loaded_ids, workspace_id)
+        captured = self._peerWorkspaces.capture_persistence_records()
+        captured_workspaces = captured["workspaces"]
+        for captured_id, captured_record in captured_workspaces.items():
+            previous = deepcopy(dict(workspaces.get(captured_id, {})))
+            previous.update(deepcopy(dict(captured_record)))
+            previous["profile"] = deepcopy(
+                dict(workspaces.get(captured_id, {}).get("profile", {}))
+            )
+            previous["profile"].update(
+                deepcopy(dict(captured_record.get("profile", {})))
+            )
+            extensions = deepcopy(
+                dict(workspaces.get(captured_id, {}).get("extensions", {}))
+            )
+            extensions.update(
+                deepcopy(dict(captured_record.get("extensions", {})))
+            )
+            if captured_id == workspace_id:
+                previous["session"] = pyzo.workspaceSession.capture()
+                extensions["pyzo_peer_initialized"] = True
+            previous["extensions"] = extensions
+            workspaces[captured_id] = previous
+        loaded_ids = tuple(captured["loaded_workspace_ids"])
+        active_workspace_id = captured["active_workspace_id"] or workspace_id
 
         recovery = deepcopy(dict(loaded.state.recovery))
         recovery_snapshots = []
@@ -1636,7 +1643,7 @@ class MainWindow(_ApplicationHostBase):
         )
         state = self._WorkspacePersistenceState(
             tuple(loaded_ids),
-            workspace_id,
+            active_workspace_id,
             workspaces,
             resources,
             recovery,
