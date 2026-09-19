@@ -4590,6 +4590,8 @@ class _CallbackEventHandler(QtCore.QObject):
             except Empty:
                 break
             try:
+                if "--test" in sys.argv:
+                    pyzo._test_callback_running = True
                 callback(*args)
             except Exception as why:
                 print("callback failed: {}:\n{}".format(callback, why))
@@ -4599,6 +4601,9 @@ class _CallbackEventHandler(QtCore.QObject):
                     if abort is not None:
                         abort(why)
                 return
+            finally:
+                if "--test" in sys.argv:
+                    pyzo._test_callback_running = False
 
     def postEventWithCallback(self, callback, *args):
         if self._aborted:

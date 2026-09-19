@@ -327,6 +327,8 @@ def start():
         testTimeout = 10.0 if host._peerFrameMode else 5.0
 
         def testrunTimerCallback(*args):
+            if getattr(pyzo, "_test_callback_running", False):
+                return
             dt = time.time() - startTime
             print("*** testrunTimerCallback:", dt, "s ***")
             if host._peerFrameMode:
