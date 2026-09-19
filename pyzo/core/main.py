@@ -1618,7 +1618,13 @@ class MainWindow(_ApplicationHostBase):
                 runtime_identity = self._PeerApplicationIdentity(
                     self._PeerIdentityKind.WORKSPACE, workspace_id
                 )
-                runtime = self._peerRuntimeCatalog.runtime(runtime_identity)
+                try:
+                    runtime = self._peerRuntimeCatalog.runtime(runtime_identity)
+                except KeyError:
+                    self._peerWorkspaceRestoreFailures.setdefault(
+                        workspace_id, "workspace runtime is unavailable"
+                    )
+                    continue
                 if runtime is self._peerRuntime:
                     item = pyzo.editors.newFile()
                 else:
@@ -1666,7 +1672,7 @@ class MainWindow(_ApplicationHostBase):
                 str(identity), {}
             )
             result = self._restorePeerRuntimeLayout(runtime, record)
-            if not result.applied:
+            if not result.applied and result.detail:
                 self._peerWorkspaceRestoreFailures[str(identity)] = result.detail
         for host in pyzo.editors.groups:
             self._bindPeerEditorLifecycle(host)
@@ -1686,7 +1692,7 @@ class MainWindow(_ApplicationHostBase):
         session = record.get("session", {}) if isinstance(record, dict) else {}
         saved = session.get("layout") if isinstance(session, dict) else None
         if not isinstance(saved, dict) or not saved.get("frames"):
-            return self._PeerOperationResult(True)
+            return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
         workspace = self._peerWorkspaces.model(runtime.identity)
         current = workspace.serialize_layout()
         saved_frames = saved.get("frames", [])
@@ -1716,7 +1722,9 @@ class MainWindow(_ApplicationHostBase):
             and len(saved_groups) == len(current_groups)
             and len(saved_panes) == len(current_panes)
         ):
-            return self._PeerOperationResult(False, "layout identity counts differ")
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, "layout identity counts differ"
+            )
         frame_ids = dict(
             zip(
                 (frame["id"] for frame in saved_frames),
@@ -1766,22 +1774,31 @@ class MainWindow(_ApplicationHostBase):
             self._PeerIdentityKind.WORKSPACE, str(workspace_id)
         )
         if identity in self._peerWorkspaces.workspace_ids:
-            return self._PeerOperationResult(False, "workspace is already loaded")
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, "workspace is already loaded"
+            )
         if str(workspace_id) not in self._peerWorkspaceRestoreFailures:
-            return self._PeerOperationResult(False, "workspace has no restore failure")
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, "workspace has no restore failure"
+            )
         record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
             str(workspace_id)
         )
         if not isinstance(record, dict):
-            return self._PeerOperationResult(False, "workspace record is unavailable")
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID,
+                "workspace record is unavailable",
+            )
         try:
             self._peerRestoreRuntimeFactory(str(workspace_id), record)
             self._restorePersistedPeerEditors((str(workspace_id),))
         except Exception as error:
             self._peerWorkspaceRestoreFailures[str(workspace_id)] = str(error)
-            return self._PeerOperationResult(False, str(error))
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.INVALID, str(error)
+            )
         self._peerWorkspaceRestoreFailures.pop(str(workspace_id), None)
-        return self._PeerOperationResult(True)
+        return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
 
     @classmethod
     def _peerJsonValue(cls, value):
