@@ -1666,15 +1666,24 @@ class MainWindow(_ApplicationHostBase):
                 editor.document().setModified(resource.is_dirty())
         finally:
             self._peerEditorLifecycleMigration = False
+        view_workspace_ids = {
+            str(view.get("workspace_id"))
+            for _view_id, view in persisted_views
+            if isinstance(view, dict) and view.get("workspace_id") is not None
+        }
         for identity in self._peerRuntimeCatalog.identities:
-            if identity != self._peerRuntime.identity:
+            if str(identity) not in view_workspace_ids:
                 continue
             runtime = self._peerRuntimeCatalog.runtime(identity)
             record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
                 str(identity), {}
             )
             result = self._restorePeerRuntimeLayout(runtime, record)
-            if not result.applied and result.detail:
+            if (
+                runtime is not self._peerRuntime
+                and not result.applied
+                and result.detail
+            ):
                 self._peerWorkspaceRestoreFailures[str(identity)] = result.detail
         for host in pyzo.editors.groups:
             self._bindPeerEditorLifecycle(host)
