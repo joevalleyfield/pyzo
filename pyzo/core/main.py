@@ -1015,6 +1015,7 @@ class MainWindow(_ApplicationHostBase):
                 name=primary_name,
                 persistence_location=primary_location,
                 state=primary_profile,
+                persisted=not self._peerPersistedEmptyWorkspaceSet,
             )
             self._peerWorkspaceRestoreFailures = {}
             loaded_ids = self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
@@ -1828,38 +1829,61 @@ class MainWindow(_ApplicationHostBase):
             for candidate in self._peerRuntimeCatalog.identities
             if candidate != identity
         )
-        if not survivors:
-            return self._PeerOperationResult(
-                self._PeerOperationStatus.UNSUPPORTED,
-                "at least one workspace must remain loaded",
-            )
-        result = runtime.model.request_shutdown(self._resolvePeerClose)
-        if not result.applied:
-            return result
-        while runtime.model.panes:
-            pane_id = next(iter(runtime.model.panes))
-            result = runtime.model.request_close_pane(
-                pane_id, self._resolvePeerClose
-            )
-            if not result.applied:
-                context = runtime.model.resolve_pane_context(pane_id)
-                if context is not None and context.frame_id is None:
-                    runtime.model.release_pane(pane_id)
-                    continue
+        self._peerClosingWorkspace = True
+        try:
+            result = runtime.model.request_shutdown(self._resolvePeerClose)
             if not result.applied:
                 return result
+            while runtime.model.panes:
+                pane_id = next(iter(runtime.model.panes))
+                result = runtime.model.request_close_pane(
+                    pane_id, self._resolvePeerClose
+                )
+                if not result.applied:
+                    context = runtime.model.resolve_pane_context(pane_id)
+                    if context is not None and context.frame_id is None:
+                        runtime.model.release_pane(pane_id)
+                        continue
+                if not result.applied:
+                    return result
+        finally:
+            self._peerClosingWorkspace = False
         removed = self._peerWorkspaces.remove_workspace(identity)
         if not removed.applied:
             return removed
         self._peerRuntimeCatalog.dispose(identity)
-        if identity == self._peerRuntime.identity:
+        if survivors and identity == self._peerRuntime.identity:
             self._peerRuntime = self._peerRuntimeCatalog.runtime(survivors[0])
             self._peerBackend = self._peerRuntime.backend
             self._peerWorkspaceIdentity = self._peerRuntime.identity
             self._peerWorkspace = self._peerRuntime.model
             self._editorHosts = self._peerRuntime.editor_hosts
             self._shellHosts = self._peerRuntime.shell_hosts
-        self._peerWorkspaces.activate_workspace(survivors[0])
+        if survivors:
+            self._peerWorkspaces.activate_workspace(survivors[0])
+        else:
+            empty_identity = self._PeerNewIdentity(self._PeerIdentityKind.WORKSPACE)
+            self._peerRuntime = self._peerRuntimeCatalog.create(
+                identity=empty_identity,
+                backend_factory=self._PeerQtAdsBackend,
+                model_factory=lambda backend, workspace_id: self._PeerWorkspaceModel(
+                    backend, workspace_id=workspace_id
+                ),
+                frame_close_request=self._requestPeerFrameClose,
+                pane_close_request=self._requestPeerPaneClose,
+            )
+            self._peerWorkspaces.add_workspace(
+                self._peerRuntime.model,
+                identity=empty_identity,
+                name="Bootstrap",
+                persisted=False,
+            )
+            self._peerBackend = self._peerRuntime.backend
+            self._peerWorkspaceIdentity = self._peerRuntime.identity
+            self._peerWorkspace = self._peerRuntime.model
+            self._editorHosts = self._peerRuntime.editor_hosts
+            self._shellHosts = self._peerRuntime.shell_hosts
+            self._peerPersistedEmptyWorkspaceSet = True
         self._savePeerWorkspacePersistence(
             preserve_workspace_ids=(str(identity),)
         )
@@ -1881,11 +1905,19 @@ class MainWindow(_ApplicationHostBase):
             return self._PeerOperationResult(
                 self._PeerOperationStatus.INVALID, "workspace record is unavailable"
             )
+        was_empty = not self._peerWorkspaces.workspace_ids
         try:
             self._peerRestoreRuntimeFactory(str(workspace_id), record)
             self._restorePersistedPeerEditors((str(workspace_id),))
             self._peerWorkspaces.activate_workspace(identity)
             self._activatePeerWorkspace(identity)
+            if was_empty:
+                self._peerRuntime = self._peerRuntimeCatalog.runtime(identity)
+                self._peerBackend = self._peerRuntime.backend
+                self._peerWorkspaceIdentity = self._peerRuntime.identity
+                self._peerWorkspace = self._peerRuntime.model
+                self._editorHosts = self._peerRuntime.editor_hosts
+                self._shellHosts = self._peerRuntime.shell_hosts
             self._savePeerWorkspacePersistence()
         except Exception as error:
             if identity in self._peerWorkspaces.workspace_ids:
@@ -1963,7 +1995,10 @@ class MainWindow(_ApplicationHostBase):
             workspaces[captured_id] = previous
         loaded_ids = tuple(captured["loaded_workspace_ids"])
         active_workspace_id = captured["active_workspace_id"] or workspace_id
-        if self._peerPersistedEmptyWorkspaceSet and not self._peerWorkspace.panes:
+        persisted_empty = (
+            self._peerPersistedEmptyWorkspaceSet and not self._peerWorkspace.panes
+        )
+        if persisted_empty:
             loaded_ids = ()
             active_workspace_id = None
         else:
@@ -1981,6 +2016,8 @@ class MainWindow(_ApplicationHostBase):
             "workspace_id": workspace_id,
             "snapshots": recovery_snapshots,
         }
+        if persisted_empty:
+            recovery.pop(workspace_id, None)
         resources = self._mergePeerResourcePersistence(
             loaded.state.shared_resources,
             document_snapshot
@@ -3017,6 +3054,8 @@ class MainWindow(_ApplicationHostBase):
             result.applied
             and not self._peerWorkspace.frames
             and lifecycle is not None
+            and not getattr(self, "_peerClosingWorkspace", False)
+            and not getattr(self, "_peerApplicationExitRequested", False)
         ):
             lifecycle.zero_frames_reached()
 
@@ -3050,7 +3089,11 @@ class MainWindow(_ApplicationHostBase):
         )
         self._peerApplicationLifecycle = self._ApplicationFrameLifecycle(
             has_independent_handle=lambda: sys.platform == "darwin",
-            frame_count=lambda: len(self._peerWorkspace.frames),
+            frame_count=lambda: (
+                1
+                if getattr(self, "_peerApplicationExitRequested", False)
+                else len(self._peerWorkspace.frames)
+            ),
             request_quit=lambda: callLater(self.quit),
             create_configured_frame=self._createConfiguredPeerDefaultFrame,
             create_factory_frame=self._createFactoryPeerDefaultFrame,
@@ -3077,9 +3120,13 @@ class MainWindow(_ApplicationHostBase):
         return dialog.clickedButton() is close_button
 
     def _requestPeerWorkspaceShutdown(self):
-        result = self._peerWorkspace.request_shutdown(
-            self._resolvePeerApplicationClose
-        )
+        self._peerClosingWorkspace = True
+        try:
+            result = self._peerWorkspace.request_shutdown(
+                self._resolvePeerApplicationClose
+            )
+        finally:
+            self._peerClosingWorkspace = False
         return self._WorkspaceShutdownResult(
             result.applied, result.cleanup_errors
         )
@@ -3298,6 +3345,7 @@ class MainWindow(_ApplicationHostBase):
         print(message, file=sys.stderr)
 
     def _requestPeerApplicationExit(self, disposition):
+        self._peerApplicationExitRequested = True
         return self._peerShutdownCoordinator.request(disposition)
 
     def _onPeerApplicationStateChanged(self, state):
@@ -3305,6 +3353,8 @@ class MainWindow(_ApplicationHostBase):
             self._peerApplicationLifecycle.application_activated()
 
     def _createConfiguredPeerDefaultFrame(self):
+        if getattr(self, "_peerApplicationExitRequested", False):
+            return
         if self._peerFactoryStartup:
             self._createFactoryPeerDefaultFrame()
             return
@@ -3314,6 +3364,8 @@ class MainWindow(_ApplicationHostBase):
         self._createPeerDefaultFrame(configured_tools)
 
     def _createFactoryPeerDefaultFrame(self):
+        if getattr(self, "_peerApplicationExitRequested", False):
+            return
         self._createPeerDefaultFrame(
             ("pyzosourcestructure", "pyzofilebrowser"),
             factory_layout=True,
