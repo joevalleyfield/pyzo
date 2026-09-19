@@ -35,6 +35,15 @@ class WorkspaceCoordinator:
         assert workspace_id == "workspace-a"
         return self._workspace
 
+    def activate_workspace(self, workspace_id):
+        return ("activate", workspace_id)
+
+    def activate_pane(self, workspace_id, pane_id):
+        return ("activate-pane", workspace_id, pane_id)
+
+    def resolve_workspace_context(self, workspace_id, pane_id=None):
+        return ("context", workspace_id, pane_id)
+
 
 class DocumentRegistry:
     def __init__(self):
@@ -137,6 +146,20 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
     assert controller.workspaces.active_identity == "workspace-a"
     assert controller.workspaces.context().frame_id == "frame-a"
     assert controller.workspaces.model("workspace-a") is workspace
+    assert controller.workspaces.activate("workspace-b") == (
+        "activate",
+        "workspace-b",
+    )
+    assert controller.workspaces.activate_pane("workspace-b", "pane-b") == (
+        "activate-pane",
+        "workspace-b",
+        "pane-b",
+    )
+    assert controller.workspaces.context_for("workspace-b", "pane-b") == (
+        "context",
+        "workspace-b",
+        "pane-b",
+    )
     assert controller.documents.registry is documents
     editor = Editor()
     assert controller.documents.identity(editor) == "document-a"

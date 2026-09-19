@@ -43,6 +43,21 @@ class WorkspaceCollectionAccess:
     def model(self, workspace_id):
         return self._coordinator.model(workspace_id)
 
+    def activate(self, workspace_id):
+        """Activate an explicitly addressed workspace without focus guessing."""
+
+        return self._coordinator.activate_workspace(workspace_id)
+
+    def activate_pane(self, workspace_id, pane_id):
+        """Activate a pane only when it belongs to the addressed workspace."""
+
+        return self._coordinator.activate_pane(workspace_id, pane_id)
+
+    def context_for(self, workspace_id, pane_id=None):
+        """Resolve a workspace-addressed context without active fallback."""
+
+        return self._coordinator.resolve_workspace_context(workspace_id, pane_id)
+
 
 class DocumentCollectionAccess:
     """Bridge peer editors to the application-owned document resource model."""
