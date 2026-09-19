@@ -687,7 +687,9 @@ class MainWindow(_ApplicationHostBase):
 
         if self._peerFrameMode:
             if "--test" not in sys.argv:
-                if self._peerFactoryStartup:
+                if self._peerPersistedEmptyWorkspaceSet:
+                    pass
+                elif self._peerFactoryStartup:
                     pyzo.editors.newFile()
                 else:
                     self._restoreLegacyEditorStateIntoPeerPanes()
@@ -861,21 +863,25 @@ class MainWindow(_ApplicationHostBase):
                 issue.kind in {"process", "resources", "application"}
                 for issue in self._peerWorkspacePersistenceLoad.issues
             )
-            persisted_workspace_id = (
-                self._peerWorkspacePersistenceLoad.state.active_workspace_id
-                or next(
-                    (
-                        identity
-                        for identity in self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
-                        if identity
-                        in self._peerWorkspacePersistenceLoad.state.workspaces
-                    ),
-                    None,
-                )
-                or next(
-                    iter(self._peerWorkspacePersistenceLoad.state.workspaces),
-                    None,
-                )
+            persisted_loaded_ids = tuple(
+                self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
+            )
+            persisted_workspace_id = next(
+                (
+                    identity
+                    for identity in (
+                        self._peerWorkspacePersistenceLoad.state.active_workspace_id,
+                        *persisted_loaded_ids,
+                    )
+                    if identity in persisted_loaded_ids
+                    and identity
+                    in self._peerWorkspacePersistenceLoad.state.workspaces
+                ),
+                None,
+            )
+            self._peerPersistedEmptyWorkspaceSet = bool(
+                self._peerWorkspacePersistenceLoad.generation is not None
+                and not persisted_loaded_ids
             )
             factory_startup = persisted_workspace_id is None
             if persisted_workspace_id is not None:
@@ -926,7 +932,10 @@ class MainWindow(_ApplicationHostBase):
             self._peerFactoryStartup = (
                 factory_startup and "--test" not in sys.argv
             )
-            if persisted_workspace_id is None:
+            if (
+                persisted_workspace_id is None
+                and not self._peerPersistedEmptyWorkspaceSet
+            ):
                 candidate_identity = new_identity(IdentityKind.WORKSPACE)
                 if (
                     (
@@ -1469,6 +1478,8 @@ class MainWindow(_ApplicationHostBase):
             self._installPeerApplicationLifecycle()
 
     def _restorePeerWorkspaceSession(self):
+        if self._peerPersistedEmptyWorkspaceSet:
+            return
         if self._peerFactoryStartup:
             self._peerApplicationLifecycle.initialize_default_frame()
             return
@@ -1622,6 +1633,11 @@ class MainWindow(_ApplicationHostBase):
             workspaces[captured_id] = previous
         loaded_ids = tuple(captured["loaded_workspace_ids"])
         active_workspace_id = captured["active_workspace_id"] or workspace_id
+        if self._peerPersistedEmptyWorkspaceSet and not self._peerWorkspace.panes:
+            loaded_ids = ()
+            active_workspace_id = None
+        else:
+            self._peerPersistedEmptyWorkspaceSet = False
 
         recovery = deepcopy(dict(loaded.state.recovery))
         recovery_snapshots = []
