@@ -2331,6 +2331,24 @@ class MainWindow(_ApplicationHostBase):
                 self._dockManager.removeDockWidget(dock)
                 dock.deleteLater()
 
+    def _abortPeerTestRun(self):
+        """Best-effort cleanup for a failed test-owned process only."""
+
+        if getattr(self, "_peerTestAbortDone", False):
+            return
+        self._peerTestAbortDone = True
+        if not self._peerFrameMode:
+            return
+        runtime = getattr(self, "_peerRuntime", None)
+        if runtime is not None:
+            runtime.dispose()
+        kernel_manager = getattr(pyzo, "localKernelManager", None)
+        if kernel_manager is not None:
+            try:
+                kernel_manager.terminateAll()
+            except Exception:
+                pass
+
     def _createShellHost(self):
         runtime = getattr(self, "_peerRuntime", None)
         if runtime is not None:
@@ -4559,9 +4577,14 @@ class _CallbackEventHandler(QtCore.QObject):
     def __init__(self):
         super().__init__()
         self.queue = Queue()
+        self._aborted = False
 
     def customEvent(self, event):
+        if self._aborted:
+            return
         while True:
+            if self._aborted:
+                return
             try:
                 callback, args = self.queue.get_nowait()
             except Empty:
@@ -4571,10 +4594,25 @@ class _CallbackEventHandler(QtCore.QObject):
             except Exception as why:
                 print("callback failed: {}:\n{}".format(callback, why))
                 traceback.print_exc()
+                if "--test" in sys.argv:
+                    abort = getattr(pyzo, "_abort_test_run", None)
+                    if abort is not None:
+                        abort(why)
+                return
 
     def postEventWithCallback(self, callback, *args):
+        if self._aborted:
+            return
         self.queue.put((callback, args))
         QtWidgets.qApp.postEvent(self, QtCore.QEvent(QtCore.QEvent.Type.User))
+
+    def abort(self) -> None:
+        self._aborted = True
+        while True:
+            try:
+                self.queue.get_nowait()
+            except Empty:
+                return
 
 
 def callLater(callback, *args):
@@ -4585,6 +4623,7 @@ def callLater(callback, *args):
 # Create callback event handler instance and insert function in pyzo namespace
 _callbackEventHandler = _CallbackEventHandler()
 pyzo.callLater = callLater
+pyzo._callbackEventHandler = _callbackEventHandler
 
 
 _SCREENSHOT_CODE = """

@@ -395,8 +395,48 @@ def start():
         timer.timeout.connect(testrunTimerCallback)
         timer.start()
 
+        def abort_test_run(error):
+            if getattr(pyzo, "_test_abort_done", False):
+                return
+            pyzo._test_abort_done = True
+            timer.stop()
+            print(
+                "Test callback failure; aborting test-owned run",
+                file=sys.stderr,
+            )
+            callback_handler = getattr(pyzo, "_callbackEventHandler", None)
+            if callback_handler is not None:
+                callback_handler.abort()
+
+            def finish_abort():
+                cleanup = getattr(host, "_abortPeerTestRun", None)
+                if cleanup is not None:
+                    cleanup()
+                try:
+                    commandline.stop_our_server()
+                finally:
+                    pyzo._test_exit_code = 1
+                    QtWidgets.qApp.exit(1)
+
+            QtCore.QTimer.singleShot(0, finish_abort)
+
+        pyzo._abort_test_run = abort_test_run
+        if os.environ.get("PYZO_TEST_INJECT_CALLBACK_FAILURE") == "1":
+            callback_handler = getattr(pyzo, "_callbackEventHandler", None)
+            if callback_handler is not None:
+                callback_handler.abort()
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: abort_test_run(
+                    AssertionError("injected test callback failure")
+                ),
+            )
+
     # Enter the main loop
     QtWidgets.qApp.exec()
+    exit_code = getattr(pyzo, "_test_exit_code", 0)
+    if exit_code:
+        sys.exit(exit_code)
 
 
 ## Init
