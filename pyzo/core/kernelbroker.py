@@ -686,7 +686,11 @@ class KernelTerminator:
             pass
 
         elif action == "TERM":
-            self._broker._reqp_control.terminate()
+            control = getattr(self._broker, "_reqp_control", None)
+            if control is None:
+                self._do("KILL", 0)
+                return
+            control.terminate()
             self._do("INT", 0.5)
 
         elif action == "INT":
@@ -696,14 +700,22 @@ class KernelTerminator:
             self._count += 1
             # Handle
             if self._count < 5:
-                self._broker._reqp_control.interrupt()
+                control = getattr(self._broker, "_reqp_control", None)
+                if control is None:
+                    self._do("KILL", 0)
+                    return
+                control.interrupt()
                 self._do("INT", 0.1)
             else:
                 self._do("KILL", 0)
 
         elif action == "KILL":
             # Get pid and signal
-            pid = self._broker._kernelCon.pid2
+            connection = getattr(self._broker, "_kernelCon", None)
+            if connection is None:
+                self._do("NOTHING", 9999999999999999)
+                return
+            pid = connection.pid2
             sigkill = signal.SIGTERM
             if hasattr(signal, "SIGKILL"):
                 sigkill = signal.SIGKILL

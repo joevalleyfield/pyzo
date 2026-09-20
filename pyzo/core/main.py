@@ -1831,7 +1831,18 @@ class MainWindow(_ApplicationHostBase):
         )
         self._peerClosingWorkspace = True
         try:
-            result = runtime.model.request_shutdown(self._resolvePeerClose)
+            result = runtime.model.preflight_shutdown(self._resolvePeerClose)
+            if not result.applied:
+                return result
+            try:
+                self._savePeerWorkspacePersistence()
+            except Exception as error:
+                runtime.model.discard_preflight()
+                return self._PeerOperationResult(
+                    self._PeerOperationStatus.INVALID,
+                    "workspace persistence preflight failed: " + str(error),
+                )
+            result = runtime.model.request_shutdown()
             if not result.applied:
                 return result
             while runtime.model.panes:
