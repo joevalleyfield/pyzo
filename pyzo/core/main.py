@@ -1588,12 +1588,15 @@ class MainWindow(_ApplicationHostBase):
                 print("Could not restore peer workspace session: " + result.detail)
         self._peerApplicationLifecycle.initialize_default_frame()
 
-    def _restorePersistedPeerEditors(self, workspace_ids=None):
+    def _restorePersistedPeerEditors(
+        self, workspace_ids=None, *, include_retained=False
+    ):
         """Recreate persisted open editor views before restoring their layout."""
 
         resources = self._peerPersistedDocumentResources
         documents = resources.get("documents", {})
         views = resources.get("views", {})
+        retained_views = resources.get("retained_views", {})
         if not isinstance(documents, dict) or not isinstance(views, dict):
             return
         loaded_workspace_ids = {
@@ -1611,6 +1614,17 @@ class MainWindow(_ApplicationHostBase):
             and isinstance(view, dict)
             and view.get("workspace_id") in loaded_workspace_ids
         ]
+        retained_ids = set()
+        if include_retained and isinstance(retained_views, dict):
+            for view_id, view in retained_views.items():
+                if (
+                    isinstance(view_id, str)
+                    and isinstance(view, dict)
+                    and view.get("workspace_id") in loaded_workspace_ids
+                    and view_id not in views
+                ):
+                    persisted_views.append((view_id, view))
+                    retained_ids.add(view_id)
         if not persisted_views:
             return
         self._peerEditorLifecycleMigration = True
@@ -1631,6 +1645,16 @@ class MainWindow(_ApplicationHostBase):
                         workspace_id, "workspace runtime is unavailable"
                     )
                     continue
+                if view_id in retained_ids:
+                    self._peerDocumentResources.reopen_view(
+                        self._PeerApplicationIdentity(
+                            self._PeerIdentityKind.DOCUMENT, document_id
+                        ),
+                        view_id=self._PeerApplicationIdentity(
+                            self._PeerIdentityKind.VIEW, view_id
+                        ),
+                        workspace_id=runtime_identity,
+                    )
                 if runtime is self._peerRuntime:
                     item = pyzo.editors.newFile()
                 else:
@@ -1919,7 +1943,9 @@ class MainWindow(_ApplicationHostBase):
         was_empty = not self._peerWorkspaces.workspace_ids
         try:
             self._peerRestoreRuntimeFactory(str(workspace_id), record)
-            self._restorePersistedPeerEditors((str(workspace_id),))
+            self._restorePersistedPeerEditors(
+                (str(workspace_id),), include_retained=True
+            )
             self._peerWorkspaces.activate_workspace(identity)
             self._activatePeerWorkspace(identity)
             if was_empty:
