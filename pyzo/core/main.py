@@ -2386,14 +2386,17 @@ class MainWindow(_ApplicationHostBase):
             self._editorHostSerial += 1
             serial = self._editorHostSerial
             backend = self._dockManager
-            workspace = self._peerWorkspace
+            # Legacy startup does not own a peer workspace. This value is only
+            # consulted by the peer-frame routing branch below.
+            workspace = None
             hosts = self._editorHosts
         target_dock = None
         if self._peerFrameMode and runtime is self._peerRuntime:
             editor_service = getattr(pyzo, "editors", None)
             active_host = getattr(editor_service, "activeGroup", None)
             target_dock = self._editorHosts.get(active_host)
-        dock = self._QtAds.CDockWidget(backend.manager, "Untitled")
+        dock_manager = backend.manager if runtime is not None else backend
+        dock = self._QtAds.CDockWidget(dock_manager, "Untitled")
         dock.setObjectName(f"pyzo-editor-dock-{serial}")
         host = self._EditorTabs(dock)
         host.setObjectName(f"pyzo-editor-host-{serial}")
@@ -2510,6 +2513,8 @@ class MainWindow(_ApplicationHostBase):
         return None
 
     def _peerRuntimeForEditorHost(self, host):
+        if not self._peerFrameMode:
+            return None
         for identity in self._peerRuntimeCatalog.identities:
             runtime = self._peerRuntimeCatalog.runtime(identity)
             if host in runtime.editor_hosts:
@@ -2517,6 +2522,8 @@ class MainWindow(_ApplicationHostBase):
         return self._peerRuntime
 
     def _peerRuntimeForShellHost(self, host):
+        if not self._peerFrameMode:
+            return None
         for identity in self._peerRuntimeCatalog.identities:
             runtime = self._peerRuntimeCatalog.runtime(identity)
             if host in runtime.shell_hosts:
