@@ -3106,10 +3106,12 @@ class MainWindow(_ApplicationHostBase):
     def _installPeerApplicationLifecycle(self):
         self._peerDefaultFrameErrors = []
         self._peerApplicationExitErrors = []
+        self._peerPersistencePreflightSaved = False
+        pyzo.application._peerPersistencePreflightSaved = False
         self._peerShutdownCoordinator = self._ApplicationShutdownCoordinator(
             confirm_exit=self._confirmPeerApplicationExit,
             request_workspace_shutdown=self._requestPeerWorkspaceShutdown,
-            prepare_cleanup=pyzo.workspacePersistence.save,
+            prepare_cleanup=self._preparePeerApplicationPersistence,
             cleanup_steps=(
                 self._PeerCleanupStep("config", pyzo.saveConfig),
                 self._PeerCleanupStep("history", pyzo.command_history.save),
@@ -3148,6 +3150,19 @@ class MainWindow(_ApplicationHostBase):
             QtWidgets.qApp.applicationStateChanged.connect(
                 self._onPeerApplicationStateChanged
             )
+
+    def _preparePeerApplicationPersistence(self):
+        """Save the open workspace before application teardown closes panes.
+
+        Generic config cleanup runs after pane teardown.  Its second workspace
+        save would otherwise replace the startup-open view set with retained
+        views, making a clean editor appear to have been explicitly closed.
+        """
+
+        self._peerPersistencePreflightSaved = False
+        pyzo.workspacePersistence.save()
+        self._peerPersistencePreflightSaved = True
+        pyzo.application._peerPersistencePreflightSaved = True
 
     def _confirmPeerApplicationExit(self, _disposition):
         if not pyzo.config.advanced.alwaysAskWhenClosingPyzo:

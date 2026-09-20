@@ -220,7 +220,14 @@ def saveConfig():
                 pyzo.config.state.peerWorkspaceSession = (
                     pyzo.workspaceSession.capture()
                 )
-                if pyzo.workspacePersistence is not None:
+                if (
+                    pyzo.workspacePersistence is not None
+                    and not getattr(
+                        pyzo.application,
+                        "_peerPersistencePreflightSaved",
+                        False,
+                    )
+                ):
                     pyzo.workspacePersistence.save()
         elif pyzo.main:
             pyzo.main.saveWindowState()
