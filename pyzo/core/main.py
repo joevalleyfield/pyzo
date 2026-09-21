@@ -2083,6 +2083,9 @@ class MainWindow(_ApplicationHostBase):
         try:
             self._savePeerWorkspacePersistence(snapshot)
         except Exception as error:
+            self._peerStatusService.showMessage(
+                "Checkpoint failed: " + str(error)
+            )
             complete(self._peerRetentionCoordinator.state.revision, error)
         else:
             complete(self._peerRetentionCoordinator.state.revision)
@@ -3401,6 +3404,7 @@ class MainWindow(_ApplicationHostBase):
 
     def _logPeerApplicationExitError(self, message):
         self._peerApplicationExitErrors.append(message)
+        self._peerStatusService.showMessage(message)
         print(message, file=sys.stderr)
 
     def _requestPeerApplicationExit(self, disposition):
