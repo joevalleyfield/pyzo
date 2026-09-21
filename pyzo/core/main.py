@@ -1627,6 +1627,7 @@ class MainWindow(_ApplicationHostBase):
                     retained_ids.add(view_id)
         if not persisted_views:
             return
+        external_conflicts = []
         self._peerEditorLifecycleMigration = True
         try:
             for view_id, view in persisted_views:
@@ -1662,6 +1663,7 @@ class MainWindow(_ApplicationHostBase):
                     pyzo.editors.addGroup(host)
                     item = host.newFile()
                 editor = item.editor
+                host = pyzo.editors._group_for_editor(editor)
                 path = record.get("path")
                 if isinstance(path, str):
                     editor._filename = path
@@ -1691,9 +1693,20 @@ class MainWindow(_ApplicationHostBase):
                         self._PeerIdentityKind.DOCUMENT, document_id
                     )
                 )
+                if self._markPeerExternalConflict(resource, record):
+                    external_conflicts.append(record.get("path") or document_id)
+                editor._peerExternalConflict = resource.external_conflict
+                editor._peerExternalText = resource.external_text
+                editor._peerExternalSignature = resource.external_signature
                 editor.document().setModified(resource.is_dirty())
+                self._updateEditorDockTitle(host)
         finally:
             self._peerEditorLifecycleMigration = False
+        if external_conflicts:
+            self._peerStatusService.showMessage(
+                "Retained buffers conflict with files on disk: "
+                + ", ".join(str(path) for path in external_conflicts)
+            )
         view_workspace_ids = {
             str(view.get("workspace_id"))
             for _view_id, view in persisted_views
@@ -2802,11 +2815,33 @@ class MainWindow(_ApplicationHostBase):
         title = item.name if item is not None else "Untitled"
         if item is not None and item.dirty:
             title += " *"
-        if item is not None and getattr(
-            item.editor, "_peerRecoveryConflict", False
+        if item is not None and (
+            getattr(item.editor, "_peerRecoveryConflict", False)
+            or getattr(item.editor, "_peerExternalConflict", False)
         ):
             title += " ⚠"
         self._setDockMetadata(dock, title)
+
+    def _markPeerExternalConflict(self, resource, record):
+        """Compare ordinary retained state with the current external file."""
+
+        resource.external_conflict = False
+        resource.external_text = None
+        resource.external_signature = None
+        path = record.get("path")
+        clean_text = record.get("clean_text")
+        if not isinstance(path, str) or not isinstance(clean_text, str):
+            return False
+        try:
+            with open(path, encoding="utf-8") as stream:
+                external_text = stream.read()
+        except OSError:
+            external_text = None
+        signature = self._peerFileSignature(path)
+        resource.external_text = external_text
+        resource.external_signature = signature
+        resource.external_conflict = external_text != clean_text
+        return resource.external_conflict
 
     def _projectDocumentMetadata(self, editor=None):
         if self._peerFrameMode:
