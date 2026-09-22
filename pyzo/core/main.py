@@ -13,6 +13,7 @@ import base64
 import gc
 import tempfile
 import traceback
+import tokenize
 import weakref
 from copy import deepcopy
 from queue import Queue, Empty
@@ -1698,6 +1699,7 @@ class MainWindow(_ApplicationHostBase):
                 editor._peerExternalConflict = resource.external_conflict
                 editor._peerExternalText = resource.external_text
                 editor._peerExternalSignature = resource.external_signature
+                editor._peerExternalEncoding = resource.external_encoding
                 editor.document().setModified(resource.is_dirty())
                 self._updateEditorDockTitle(host)
         finally:
@@ -2828,18 +2830,22 @@ class MainWindow(_ApplicationHostBase):
         resource.external_conflict = False
         resource.external_text = None
         resource.external_signature = None
+        resource.external_encoding = None
         path = record.get("path")
         clean_text = record.get("clean_text")
         if not isinstance(path, str) or not isinstance(clean_text, str):
             return False
         try:
-            with open(path, encoding="utf-8") as stream:
+            with tokenize.open(path) as stream:
                 external_text = stream.read()
-        except OSError:
+            external_encoding = stream.encoding
+        except (OSError, SyntaxError, UnicodeError):
             external_text = None
+            external_encoding = None
         signature = self._peerFileSignature(path)
         resource.external_text = external_text
         resource.external_signature = signature
+        resource.external_encoding = external_encoding
         resource.external_conflict = external_text != clean_text
         return resource.external_conflict
 
