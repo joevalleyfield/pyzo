@@ -294,7 +294,7 @@ class DocumentCollectionAccess:
         resource.text = editor.toPlainText()
         resource.revision += 1
         editor._peerRetentionPreviousChange = change
-        self._project(document_id, editor)
+        self._project(document_id)
         if self._on_edit is not None:
             self._on_edit()
 
@@ -375,6 +375,31 @@ class DocumentCollectionAccess:
                 pyzo.parser.parseThis(target)
         if self._on_edit is not None:
             self._on_edit()
+        return True
+
+    def resolve_external(self, editor, text, *, clean=True):
+        """Explicitly resolve a retained external observation across views."""
+
+        document_id = self.identity(editor)
+        view_id = self.view_identity(editor)
+        if document_id is None or view_id is None:
+            return False
+        self._registry.resolve_external(
+            document_id, text, origin_view_id=view_id, clean=clean
+        )
+        self._project(document_id)
+        for target in tuple(self._editors):
+            if self.identity(target) == document_id:
+                target._peerExternalConflict = False
+                target._peerExternalText = None
+                target._peerExternalSignature = None
+                target._peerExternalEncoding = None
+                target._peerExternalLatestText = None
+                target._peerExternalLatestSignature = None
+                target._peerExternalLatestEncoding = None
+                target.document().setModified(
+                    self._registry.resource(document_id).is_dirty()
+                )
         return True
 
     def can_save_as(self, editor, path):

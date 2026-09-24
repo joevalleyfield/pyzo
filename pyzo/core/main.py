@@ -1700,6 +1700,9 @@ class MainWindow(_ApplicationHostBase):
                 editor._peerExternalText = resource.external_text
                 editor._peerExternalSignature = resource.external_signature
                 editor._peerExternalEncoding = resource.external_encoding
+                editor._peerExternalLatestText = resource.external_latest_text
+                editor._peerExternalLatestSignature = resource.external_latest_signature
+                editor._peerExternalLatestEncoding = resource.external_latest_encoding
                 editor.document().setModified(resource.is_dirty())
                 self._updateEditorDockTitle(host)
         finally:
@@ -2827,10 +2830,6 @@ class MainWindow(_ApplicationHostBase):
     def _markPeerExternalConflict(self, resource, record):
         """Compare ordinary retained state with the current external file."""
 
-        resource.external_conflict = False
-        resource.external_text = None
-        resource.external_signature = None
-        resource.external_encoding = None
         path = record.get("path")
         clean_text = record.get("clean_text")
         if not isinstance(path, str) or not isinstance(clean_text, str):
@@ -2843,10 +2842,19 @@ class MainWindow(_ApplicationHostBase):
             external_text = None
             external_encoding = None
         signature = self._peerFileSignature(path)
-        resource.external_text = external_text
-        resource.external_signature = signature
-        resource.external_encoding = external_encoding
+        if resource.external_conflict and resource.external_signature is not None:
+            if signature != resource.external_signature:
+                resource.external_latest_text = external_text
+                resource.external_latest_signature = signature
+                resource.external_latest_encoding = external_encoding
+            return True
         resource.external_conflict = external_text != clean_text
+        resource.external_text = external_text if resource.external_conflict else None
+        resource.external_signature = signature if resource.external_conflict else None
+        resource.external_encoding = external_encoding if resource.external_conflict else None
+        resource.external_latest_text = None
+        resource.external_latest_signature = None
+        resource.external_latest_encoding = None
         return resource.external_conflict
 
     def _projectDocumentMetadata(self, editor=None):
