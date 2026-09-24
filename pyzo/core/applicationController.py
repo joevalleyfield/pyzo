@@ -400,6 +400,8 @@ class DocumentCollectionAccess:
                 target.document().setModified(
                     self._registry.resource(document_id).is_dirty()
                 )
+        if self._on_edit is not None:
+            self._on_edit()
         return True
 
     def can_save_as(self, editor, path):
