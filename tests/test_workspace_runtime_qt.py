@@ -160,6 +160,15 @@ class WorkspaceRuntimeQtTests(unittest.TestCase):
 
             adapter.unbind(editors[0])
             self.assertTrue(documents.close_view(view_ids[0]))
+            # Pyzo can deliver callbacks queued before unbind after another
+            # live view has edited the resource. The retired widget is stale.
+            editors[1].setPlainText("survivor edit")
+            adapter._contents_changed(editors[0], 0, 0, 1)
+            adapter._cursor_changed(editors[0])
+            adapter._changed(editors[0])
+            self.assertEqual(documents.resource(document_id).text, "survivor edit")
+            self.assertEqual(editors[1].toPlainText(), "survivor edit")
+            self.assertTrue(adapter.undo(editors[1]))
             editors[0].deleteLater()
             self.assertEqual(documents.views_for_document(document_id), (view_ids[1],))
             self.assertTrue(adapter.undo(editors[1]))

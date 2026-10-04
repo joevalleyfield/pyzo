@@ -493,6 +493,11 @@ class FileMenu(Menu):
                 icons.folder_page,
                 pyzo.main.reopen_retained_buffer,
             )
+            self.addItem(
+                translate("menu", "Recover legacy buffer... ::: Choose a preserved buffer version."),
+                icons.folder_page,
+                pyzo.main.resolve_legacy_recovery,
+            )
         #
         self._items += [
             self.addItem(

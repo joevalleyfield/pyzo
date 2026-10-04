@@ -107,6 +107,19 @@ class WorkspaceRuntimeCatalog:
         self._runtimes[identity] = runtime
         return runtime
 
+    def create_preferred(
+        self, identities, *, fallback_identity, **kwargs: Any
+    ) -> tuple[WorkspaceRuntime, dict[Any, str]]:
+        """Choose a usable startup owner without losing failed restore requests."""
+
+        failures = {}
+        for identity in dict.fromkeys(identities):
+            try:
+                return self.create(identity=identity, **kwargs), failures
+            except Exception as error:
+                failures[identity] = str(error) or type(error).__name__
+        return self.create(identity=fallback_identity, **kwargs), failures
+
     def restore_loaded(
         self,
         records: Mapping[Any, Mapping[str, Any]],

@@ -124,6 +124,10 @@ class EditorGroupManager(QtCore.QObject):
         return item
 
     def loadFile(self, filename, updateTabs=True, ignoreFail=False):
+        application = getattr(pyzo, "application", None)
+        ensure_selection = getattr(application, "ensure_recovery_selection", None)
+        if ensure_selection is not None and not ensure_selection(filename):
+            return None
         group, item = self._group_for_file(filename)
         if item is not None:
             group._tabs.setCurrentItem(item)

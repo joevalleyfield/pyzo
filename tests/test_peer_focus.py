@@ -36,10 +36,13 @@ def focus_fixture(monkeypatch, *, peer=True):
     host = SimpleNamespace(
         _peerFrameMode=peer,
         _peerRuntimeCatalog=SimpleNamespace(
-            identities=tuple(runtimes), runtime=runtimes.__getitem__,
+            identities=tuple(runtimes),
+            runtime=runtimes.__getitem__,
         ),
         _peerWorkspaces=SimpleNamespace(
-            adopt_backend_activation=lambda owner, pane: activations.append((owner, pane))
+            adopt_backend_activation=lambda owner, pane: (
+                activations.append((owner, pane)) or SimpleNamespace(applied=True)
+            )
         ),
         _projectPeerFrameMetadata=lambda dock: None,
         _editorHosts=runtimes["a"].editor_hosts,
@@ -58,8 +61,12 @@ def test_peer_focus_routes_owner_without_changing_execution(monkeypatch, owner, 
     runtime = runtimes[owner]
     for _ in range(2):
         MainWindow._onFocusedDockWidgetChanged(host, runtime.backend.docks[kind])
-        assert editors.active is (runtime.hosts["editor"] if kind == "editor" else old_editor)
-        assert shells.active is (runtime.hosts["shell"] if kind == "shell" else old_shell)
+        assert editors.active is (
+            runtime.hosts["editor"] if kind == "editor" else old_editor
+        )
+        assert shells.active is (
+            runtime.hosts["shell"] if kind == "shell" else old_shell
+        )
         assert shells.execution is execution
     assert activations == [(owner, kind)] * 2
 
@@ -77,7 +84,9 @@ def test_absent_or_retired_focus_preserves_context(monkeypatch, dock):
 
 @pytest.mark.parametrize("kind", ["editor", "shell"])
 def test_legacy_focus_keeps_existing_host_route(monkeypatch, kind):
-    host, runtimes, editors, shells, activations = focus_fixture(monkeypatch, peer=False)
+    host, runtimes, editors, shells, activations = focus_fixture(
+        monkeypatch, peer=False
+    )
     runtime = runtimes["a"]
     MainWindow._onFocusedDockWidgetChanged(host, runtime.backend.docks[kind])
     service = editors if kind == "editor" else shells
@@ -88,7 +97,9 @@ def test_legacy_focus_keeps_existing_host_route(monkeypatch, kind):
 def test_focus_sequence_tracks_last_owner_and_ignores_late_retired_dock(monkeypatch):
     host, runtimes, editors, shells, activations = focus_fixture(monkeypatch)
     for owner, kind in (("b", "shell"), ("a", "shell"), ("b", "editor")):
-        MainWindow._onFocusedDockWidgetChanged(host, runtimes[owner].backend.docks[kind])
+        MainWindow._onFocusedDockWidgetChanged(
+            host, runtimes[owner].backend.docks[kind]
+        )
     MainWindow._onFocusedDockWidgetChanged(host, object())
     assert editors.active is runtimes["b"].hosts["editor"]
     assert shells.active is runtimes["a"].hosts["shell"]
@@ -108,8 +119,8 @@ def test_widget_focus_uses_owning_runtime(monkeypatch, owner, descendant):
         runtime.backend.docks = {
             "shell": SimpleNamespace(widget=lambda content=content: content)
         }
-        runtime.backend._focused_dock_widget_changed = (
-            lambda dock, identity=identity: focused.append((identity, dock))
+        runtime.backend._focused_dock_widget_changed = lambda dock, identity=identity: (
+            focused.append((identity, dock))
         )
     host._peerBackend = runtimes["a"].backend
     projected = []
@@ -129,3 +140,35 @@ def test_widget_focus_uses_owning_runtime(monkeypatch, owner, descendant):
         for content in contents:
             content.deleteLater()
         app.sendPostedEvents()
+
+
+@pytest.mark.parametrize("owner", ["a", "b"])
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "_peerEditorLifecycleMigration",
+        "_peerClosingWorkspace",
+        "_rendering",
+        "_closing",
+    ],
+)
+def test_restore_or_teardown_focus_preserves_active_services(monkeypatch, owner, flag):
+    host, runtimes, editors, shells, activations = focus_fixture(monkeypatch)
+    target = runtimes[owner].backend if flag in {"_rendering", "_closing"} else host
+    setattr(target, flag, True)
+    editors.active = old_editor = object()
+    shells.active = old_shell = object()
+    MainWindow._onFocusedDockWidgetChanged(host, runtimes[owner].backend.docks["shell"])
+    assert activations == []
+    assert editors.active is old_editor
+    assert shells.active is old_shell
+
+
+def test_refused_focus_does_not_select_host(monkeypatch):
+    host, runtimes, editors, shells, activations = focus_fixture(monkeypatch)
+    host._peerWorkspaces.adopt_backend_activation = lambda *_: SimpleNamespace(
+        applied=False
+    )
+    shells.active = old_shell = object()
+    MainWindow._onFocusedDockWidgetChanged(host, runtimes["b"].backend.docks["shell"])
+    assert shells.active is old_shell

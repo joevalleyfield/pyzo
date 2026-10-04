@@ -32,6 +32,49 @@ class FakeModel:
 
 
 class WorkspaceRuntimeTests(unittest.TestCase):
+    def test_initial_runtime_isolates_preferred_failure_and_uses_a_fallback(self):
+        for preferred, failed, expected in (
+            (("a", "b"), set(), "a"),
+            (("a", "b"), {"a"}, "b"),
+            (("a", "b"), {"a", "b"}, "bootstrap"),
+            ((), set(), "bootstrap"),
+        ):
+            with self.subTest(preferred=preferred, failed=failed):
+                catalog = WorkspaceRuntimeCatalog()
+                backends = []
+
+                def backend_factory(backends=backends):
+                    backend = FakeBackend()
+                    backends.append(backend)
+                    return backend
+
+                def model_factory(backend, identity, failed=failed):
+                    if identity in failed:
+                        raise RuntimeError("failed " + identity)
+                    return FakeModel(backend, identity)
+
+                runtime, failures = catalog.create_preferred(
+                    preferred,
+                    fallback_identity="bootstrap",
+                    backend_factory=backend_factory,
+                    model_factory=model_factory,
+                )
+                self.assertEqual(runtime.identity, expected)
+                self.assertEqual(
+                    failures,
+                    {
+                        identity: "failed " + identity
+                        for identity in preferred
+                        if identity in failed
+                    },
+                )
+                self.assertEqual(catalog.identities, (expected,))
+                self.assertTrue(
+                    all(backend.close_count == 1 for backend in backends[:-1])
+                )
+                catalog.dispose_all()
+                self.assertEqual(backends[-1].close_count, 1)
+
     def test_runtime_owns_hosts_and_disposes_backend_once(self):
         backend = FakeBackend()
         runtime = WorkspaceRuntime.create(
@@ -97,14 +140,10 @@ class WorkspaceRuntimeTests(unittest.TestCase):
             self.assertIs(runtimes[1].shared_services["documents"], documents)
             self.assertIs(runtimes[0].shared_services["undo"], undo)
             self.assertIs(runtimes[1].shared_services["undo"], undo)
-            self.assertEqual(
-                coordinator.workspace_ids, tuple(identities)
-            )
+            self.assertEqual(coordinator.workspace_ids, tuple(identities))
         finally:
             for runtime in runtimes:
-                self.assertTrue(
-                    coordinator.remove_workspace(runtime.identity).applied
-                )
+                self.assertTrue(coordinator.remove_workspace(runtime.identity).applied)
                 runtime.dispose()
 
     def test_restore_loaded_isolates_failure_and_retry_reuses_success(self):

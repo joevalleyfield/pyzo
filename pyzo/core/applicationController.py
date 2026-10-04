@@ -239,9 +239,13 @@ class DocumentCollectionAccess:
                 self._pending.pop(document_id, None)
 
     def _contents_changed(self, editor, position, removed, added):
+        if editor not in self._editors:
+            return
         editor._peerRetentionChange = (position, removed, added)
 
     def _cursor_changed(self, editor):
+        if editor not in self._editors:
+            return
         document_id = self.identity(editor)
         view_id = self.view_identity(editor)
         if document_id is not None and view_id is not None:
@@ -261,6 +265,10 @@ class DocumentCollectionAccess:
             editor._peerRetentionBreak = True
 
     def _changed(self, editor):
+        # Codeeditor signals may already be queued when a retained view closes.
+        # Its native text no longer has authority over the shared resource.
+        if editor not in self._editors:
+            return
         change = editor._peerRetentionChange
         editor._peerRetentionChange = None
         document_id = self.identity(editor)
@@ -642,6 +650,8 @@ class PeerApplicationController(QtCore.QObject):
         retention_edit=None,
         reopen_retained_buffer=None,
         reopen_retained_view=None,
+        resolve_legacy_recovery=None,
+        ensure_recovery_selection=None,
     ):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
@@ -665,6 +675,8 @@ class PeerApplicationController(QtCore.QObject):
         )
         self.reopen_retained_buffer = reopen_retained_buffer
         self.reopen_retained_view = reopen_retained_view
+        self.resolve_legacy_recovery = resolve_legacy_recovery
+        self.ensure_recovery_selection = ensure_recovery_selection
         context_owner = workspace_coordinator or workspace
         self.active_peer = ActivePeerLookup(context_owner, frame_window)
         self.dialogs = DialogParentAccess(self.active_peer)

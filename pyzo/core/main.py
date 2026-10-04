@@ -841,7 +841,6 @@ class MainWindow(_ApplicationHostBase):
             from spikes.peer_frames.status import StatusState
             from spikes.peer_frames.workspace_session import WorkspaceSessionService
             from pyzo.core.workspaceRuntime import (
-                WorkspaceRuntime,
                 WorkspaceRuntimeCatalog,
             )
             from spikes.peer_frames.workspace_persistence import (
@@ -976,8 +975,16 @@ class MainWindow(_ApplicationHostBase):
                 candidate_identity = new_identity(IdentityKind.WORKSPACE)
             self._PeerDocumentViewState = DocumentViewState
             self._peerRuntimeCatalog = WorkspaceRuntimeCatalog()
-            self._peerRuntime = self._peerRuntimeCatalog.create(
-                identity=candidate_identity,
+            preferred_identities = tuple(
+                ApplicationIdentity(IdentityKind.WORKSPACE, identity)
+                for identity in dict.fromkeys(
+                    (str(candidate_identity), *persisted_loaded_ids)
+                )
+                if identity in self._peerWorkspacePersistenceLoad.state.workspaces
+            )
+            self._peerRuntime, initial_failures = self._peerRuntimeCatalog.create_preferred(
+                preferred_identities,
+                fallback_identity=new_identity(IdentityKind.WORKSPACE),
                 backend_factory=QtAdsPeerFrameBackend,
                 model_factory=lambda backend, identity: WorkspaceModel(
                     backend,
@@ -1016,9 +1023,14 @@ class MainWindow(_ApplicationHostBase):
                 name=primary_name,
                 persistence_location=primary_location,
                 state=primary_profile,
-                persisted=not self._peerPersistedEmptyWorkspaceSet,
+                persisted=not self._peerPersistedEmptyWorkspaceSet and not (
+                    initial_failures
+                    and str(self._peerWorkspaceIdentity) not in persisted_loaded_ids
+                ),
             )
-            self._peerWorkspaceRestoreFailures = {}
+            self._peerWorkspaceRestoreFailures = {
+                str(identity): detail for identity, detail in initial_failures.items()
+            }
             loaded_ids = self._peerWorkspacePersistenceLoad.state.loaded_workspace_ids
             records = self._peerWorkspacePersistenceLoad.state.workspaces
 
@@ -1058,6 +1070,7 @@ class MainWindow(_ApplicationHostBase):
                     identity
                     for identity in loaded_ids
                     if identity != str(self._peerWorkspaceIdentity)
+                    and identity not in self._peerWorkspaceRestoreFailures
                 ),
                 construct=restore_runtime,
             )
@@ -1303,6 +1316,8 @@ class MainWindow(_ApplicationHostBase):
                 retention_edit=lambda: self._peerRetentionCoordinator.edit(),
                 reopen_retained_buffer=self.reopenPeerRetainedBuffer,
                 reopen_retained_view=self._reopenPeerRetainedView,
+                resolve_legacy_recovery=self.resolvePeerLegacyRecovery,
+                ensure_recovery_selection=self._ensurePeerRecoverySelection,
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -1570,6 +1585,10 @@ class MainWindow(_ApplicationHostBase):
     def _restorePeerWorkspaceSession(self):
         if self._peerPersistedEmptyWorkspaceSet:
             return
+        if not self._peerWorkspaces.workspace_ids and self._peerWorkspaceRestoreFailures:
+            # Keep an unavailable loaded set retryable without fabricating
+            # editor views in the temporary bootstrap runtime.
+            return
         if self._peerFactoryStartup:
             self._restorePersistedPeerEditors()
             self._peerApplicationLifecycle.initialize_default_frame()
@@ -1676,6 +1695,13 @@ class MainWindow(_ApplicationHostBase):
                     self._PeerIdentityKind.VIEW, view_id
                 )
                 editor.setPlainText(record.get("text", ""))
+                metadata = self._peerDocumentResources._persistence_extensions.get(
+                    "legacy_recovery_selections", {}
+                ).get(document_id, {})
+                if "use_bom" in metadata:
+                    editor.useBom = bool(metadata["use_bom"])
+                if metadata.get("line_endings") in {"LF", "CRLF", "CR"}:
+                    editor.lineEndings = metadata["line_endings"]
                 editor.document().setModified(
                     record.get("clean_text") != record.get("text")
                 )
@@ -1905,6 +1931,7 @@ class MainWindow(_ApplicationHostBase):
         if not removed.applied:
             return removed
         self._peerRuntimeCatalog.dispose(identity)
+        self._peerWorkspaceRestoreFailures.pop(str(identity), None)
         if survivors and identity == self._peerRuntime.identity:
             self._peerRuntime = self._peerRuntimeCatalog.runtime(survivors[0])
             self._peerBackend = self._peerRuntime.backend
@@ -2049,7 +2076,18 @@ class MainWindow(_ApplicationHostBase):
             previous["extensions"] = extensions
             workspaces[captured_id] = previous
         loaded_ids = tuple(captured["loaded_workspace_ids"])
+        # Failed requested owners remain requested across checkpoint/restart.
+        # They can be explicitly retried without losing their retained views.
+        loaded_ids += tuple(
+            identity for identity in loaded.state.loaded_workspace_ids
+            if identity in self._peerWorkspaceRestoreFailures
+            and identity not in loaded_ids
+        )
         active_workspace_id = captured["active_workspace_id"] or workspace_id
+        if active_workspace_id not in loaded_ids:
+            active_workspace_id = loaded.state.active_workspace_id
+            if active_workspace_id not in loaded_ids:
+                active_workspace_id = next(iter(loaded_ids), None)
         persisted_empty = (
             self._peerPersistedEmptyWorkspaceSet and not self._peerWorkspace.panes
         )
@@ -2066,12 +2104,13 @@ class MainWindow(_ApplicationHostBase):
             affinity = snapshot.workspace_affinity or workspace_id
             if affinity == workspace_id:
                 recovery_snapshots.append(deepcopy(snapshot.__dict__))
-        recovery[workspace_id] = {
-            "schema": 1,
-            "workspace_id": workspace_id,
-            "snapshots": recovery_snapshots,
-        }
-        if persisted_empty:
+        if workspace_id in loaded_ids:
+            recovery[workspace_id] = {
+                "schema": 1,
+                "workspace_id": workspace_id,
+                "snapshots": recovery_snapshots,
+            }
+        else:
             recovery.pop(workspace_id, None)
         resources = self._mergePeerResourcePersistence(
             loaded.state.shared_resources,
@@ -2228,7 +2267,7 @@ class MainWindow(_ApplicationHostBase):
             )
             host = self._createEditorHostForRuntime(runtime)
             pyzo.editors.addGroup(host)
-            item = host.newFile()
+            host.newFile()
             pyzo.editors.setActiveGroup(host)
             self._bindPeerEditorLifecycle(host)
             self._activatePeerWorkspace(identity)
@@ -2253,6 +2292,11 @@ class MainWindow(_ApplicationHostBase):
     def _onFocusedDockWidgetChanged(self, dock_widget):
         # Focus selects command/service context. It does not bind an editor to
         # an interpreter; execution affinity needs its own explicit resolver.
+        if self._peerFrameMode and (
+            getattr(self, "_peerEditorLifecycleMigration", False)
+            or getattr(self, "_peerClosingWorkspace", False)
+        ):
+            return
         if self._peerFrameMode and dock_widget is not None:
             self._projectPeerFrameMetadata(dock_widget)
         if self._peerFrameMode:
@@ -2260,8 +2304,14 @@ class MainWindow(_ApplicationHostBase):
                 runtime = self._peerRuntimeCatalog.runtime(identity)
                 if dock_widget not in runtime.backend.docks.values():
                     continue
+                if getattr(runtime.backend, "_rendering", False) or getattr(
+                    runtime.backend, "_closing", False
+                ):
+                    return
                 pane_id = runtime.backend._pane_id_from_dock(dock_widget)
-                self._peerWorkspaces.adopt_backend_activation(identity, pane_id)
+                result = self._peerWorkspaces.adopt_backend_activation(identity, pane_id)
+                if not result.applied:
+                    return
                 for host, dock in runtime.editor_hosts.items():
                     if dock is dock_widget:
                         pyzo.editors.setActiveGroup(host)
@@ -2284,8 +2334,14 @@ class MainWindow(_ApplicationHostBase):
     def _activatePeerPaneForWidget(self, widget):
         if not self._peerFrameMode or not isinstance(widget, QtWidgets.QWidget):
             return
+        if getattr(self, "_peerEditorLifecycleMigration", False) or getattr(
+            self, "_peerClosingWorkspace", False
+        ):
+            return
         for identity in self._peerRuntimeCatalog.identities:
             backend = self._peerRuntimeCatalog.runtime(identity).backend
+            if getattr(backend, "_rendering", False) or getattr(backend, "_closing", False):
+                continue
             for pane_id, dock in backend.docks.items():
                 content = dock.widget()
                 if content is None:
@@ -2483,6 +2539,18 @@ class MainWindow(_ApplicationHostBase):
     def _restoreLegacyEditorStateIntoPeerPanes(self):
         """Convert legacy nested editor state at one explicit migration boundary."""
 
+        resources = self._peerPersistedDocumentResources
+        record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+            str(self._peerWorkspaceIdentity), {}
+        )
+        if resources.get("schema") == 1 and (
+            resources.get("documents")
+            or record.get("extensions", {}).get("pyzo_peer_initialized") is True
+        ):
+            # Modern views are restored from retained text, including closed
+            # buffers. Replaying legacy paths first can admit stale disk text
+            # and duplicate views into that same document authority.
+            return
         assert not self._peerEditorLifecycleMigration
         self._peerEditorLifecycleMigration = True
         try:
@@ -2662,11 +2730,14 @@ class MainWindow(_ApplicationHostBase):
 
     def _requestPeerEditorClose(self, editor):
         host = pyzo.editors._group_for_editor(editor)
-        dock = self._editorHosts.get(host)
+        runtime = self._peerRuntimeForEditorHost(host)
+        if runtime is None:
+            return 0
+        dock = runtime.editor_hosts.get(host)
         if dock is None:
             return 0
-        pane_id = self._peerBackend._pane_id_from_dock(dock)
-        result = self._peerWorkspace.request_close_pane(
+        pane_id = runtime.backend._pane_id_from_dock(dock)
+        result = runtime.model.request_close_pane(
             pane_id, self._resolvePeerEditorClose
         )
         if (
@@ -2675,13 +2746,13 @@ class MainWindow(_ApplicationHostBase):
             and result.detail == "document retention is not durable"
             and self._choosePeerRetentionFailure() == "retry"
         ):
-            result = self._peerWorkspace.request_close_pane(
+            result = runtime.model.request_close_pane(
                 pane_id, self._resolvePeerEditorClose
             )
         return 1 if result.applied else 0
 
     def _choosePeerRetentionFailure(self):
-        dialog = QtWidgets.QMessageBox(self)
+        dialog = QtWidgets.QMessageBox(pyzo.application.dialogs.parent())
         dialog.setWindowTitle("Retain buffer")
         dialog.setText("The buffer could not be retained safely.")
         dialog.setInformativeText("Retry the retention write or cancel closing?")
@@ -2697,10 +2768,7 @@ class MainWindow(_ApplicationHostBase):
         descriptor = self._peerDocumentResources.retained_view(view_id)
         resource = self._peerDocumentResources.resource(descriptor.document_id)
         target_workspace = workspace_id or descriptor.workspace_id
-        if target_workspace != self._peerWorkspaceIdentity:
-            raise ValueError(
-                "the selected workspace is not attached to this peer window"
-            )
+        runtime = self._peerRuntimeCatalog.runtime(target_workspace)
         self._peerDocumentResources.reopen_view(
             descriptor.document_id,
             view_id=view_id,
@@ -2708,7 +2776,10 @@ class MainWindow(_ApplicationHostBase):
         )
         self._peerEditorLifecycleMigration = True
         try:
-            item = pyzo.editors.newFile()
+            host = self._createEditorHostForRuntime(runtime)
+            pyzo.editors.addGroup(host)
+            item = host.newFile()
+            pyzo.editors.setActiveGroup(host)
             editor = item.editor
             if resource.path:
                 editor._filename = resource.path
@@ -2717,6 +2788,13 @@ class MainWindow(_ApplicationHostBase):
             editor._peerViewIdentity = view_id
             editor.setPlainText(resource.text)
             editor.document().setModified(resource.is_dirty())
+            metadata = self._peerDocumentResources._persistence_extensions.get(
+                "legacy_recovery_selections", {}
+            ).get(str(descriptor.document_id), {})
+            if "use_bom" in metadata:
+                editor.useBom = bool(metadata["use_bom"])
+            if metadata.get("line_endings") in {"LF", "CRLF", "CR"}:
+                editor.lineEndings = metadata["line_endings"]
             state = descriptor.state
             maximum = max(0, editor.document().characterCount() - 1)
             cursor = editor.textCursor()
@@ -2741,7 +2819,7 @@ class MainWindow(_ApplicationHostBase):
             return False
         labels = [entry["label"] for entry in choices]
         label, accepted = QtWidgets.QInputDialog.getItem(
-            self,
+            pyzo.application.dialogs.parent(),
             "Reopen retained buffer",
             "Buffer:",
             labels,
@@ -2756,7 +2834,7 @@ class MainWindow(_ApplicationHostBase):
             self._peerWorkspaces.descriptor(identity).name for identity in workspaces
         ]
         workspace_label, accepted = QtWidgets.QInputDialog.getItem(
-            self,
+            pyzo.application.dialogs.parent(),
             "Reopen retained buffer",
             "Destination workspace:",
             workspace_labels,
@@ -2773,8 +2851,231 @@ class MainWindow(_ApplicationHostBase):
                 choice["view_id"], workspace_id=target_workspace
             )
         except ValueError as error:
-            QtWidgets.QMessageBox.warning(self, "Reopen retained buffer", str(error))
+            QtWidgets.QMessageBox.warning(
+                pyzo.application.dialogs.parent(), "Reopen retained buffer", str(error)
+            )
             return False
+        return True
+
+    def legacyPeerRecoveryChoices(self):
+        loaded = self._peerWorkspaceStore.load()
+        migration = loaded.state.application_state.get("legacy_recovery", {})
+        candidates = migration.get("candidates", {})
+        return {
+            identity: deepcopy(candidates.get(identity, []))
+            for identity in migration.get("blocked_documents", [])
+        }
+
+    def _ensurePeerRecoverySelection(self, filename):
+        path = os.path.realpath(os.path.abspath(filename))
+        loaded = self._peerWorkspaceStore.load()
+        legacy = loaded.state.application_state.get("legacy_config", {})
+        raw_recovery = legacy.get(
+            "workspaceRecovery", legacy.get("state", {}).get("workspaceRecovery", {})
+        )
+        raw_candidates = []
+        if isinstance(raw_recovery, dict):
+            for value in raw_recovery.values():
+                snapshots = (
+                    value.get("snapshots", []) if isinstance(value, dict) else value
+                )
+                if isinstance(snapshots, list):
+                    raw_candidates.extend(
+                        candidate
+                        for candidate in snapshots
+                        if isinstance(candidate, dict)
+                    )
+        for document_id, candidates in self.legacyPeerRecoveryChoices().items():
+            candidates += [
+                candidate
+                for candidate in raw_candidates
+                if candidate.get("document_id") == document_id
+            ]
+            if any(
+                isinstance(candidate.get("path", candidate.get("filename")), str)
+                and os.path.realpath(
+                    os.path.abspath(candidate.get("path", candidate.get("filename")))
+                )
+                == path
+                for candidate in candidates
+            ):
+                identity = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.DOCUMENT, document_id
+                )
+                if identity in self._peerDocumentResources.document_ids:
+                    # A valid current authority takes precedence over archived
+                    # divergent candidates; selection must not overwrite it.
+                    return True
+                return self.resolvePeerLegacyRecovery(document_id)
+        # A selected but closed buffer must reopen retained text, never disk.
+        metadata = self._peerDocumentResources._persistence_extensions.get(
+            "legacy_recovery_selections", {}
+        )
+        for document_id in self._peerDocumentResources.document_ids:
+            resource = self._peerDocumentResources.resource(document_id)
+            if str(document_id) not in metadata or not resource.path:
+                continue
+            if os.path.realpath(os.path.abspath(resource.path)) != path:
+                continue
+            if self._peerDocumentResources.views_for_document(document_id):
+                return True
+            descriptors = self._peerDocumentResources.retained_views_for_document(
+                document_id
+            )
+            owner = self._peerWorkspaces.active_workspace_id
+            if not descriptors or owner is None:
+                return False
+            self._reopenPeerRetainedView(descriptors[0].view_id, workspace_id=owner)
+            self._peerRetentionCoordinator.edit()
+            return True
+        return True
+
+    def _choosePeerLegacyRecovery(self, choices, document_id=None):
+        parent = pyzo.application.dialogs.parent()
+        identities = list(choices) if document_id is None else [document_id]
+        labels = []
+        for index, identity in enumerate(identities):
+            versions = choices[identity]
+            name = next(
+                (
+                    candidate.get("filename") or candidate.get("path")
+                    for candidate in versions
+                    if candidate.get("filename") or candidate.get("path")
+                ),
+                "Untitled buffer",
+            )
+            labels.append(f"{index + 1}. {name}")
+        if not labels:
+            self._peerStatusService.showMessage("No unresolved legacy buffers.")
+            return None
+        if document_id is None:
+            label, accepted = QtWidgets.QInputDialog.getItem(
+                parent,
+                "Recover legacy buffer",
+                "Buffer:",
+                labels,
+                0,
+                False,
+            )
+            if not accepted:
+                return None
+            document_id = identities[labels.index(label)]
+        candidates = choices[document_id]
+        if not candidates:
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "Recover legacy buffer",
+                "No valid version is available. The original recovery records remain preserved for repair.",
+            )
+            return None
+        dialog = QtWidgets.QDialog(parent)
+        dialog.setWindowTitle("Recover legacy buffer")
+        dialog.resize(640, 480)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.addWidget(
+            QtWidgets.QLabel(
+                "Choose the working version. All alternatives remain retained.",
+                dialog,
+            )
+        )
+        versions = QtWidgets.QComboBox(dialog)
+        versions.setObjectName("legacy-recovery-versions")
+        versions.setAccessibleName("Preserved buffer versions")
+        versions.addItems([f"Version {index + 1}" for index in range(len(candidates))])
+        layout.addWidget(versions)
+        metadata = QtWidgets.QLabel(dialog)
+        layout.addWidget(metadata)
+        tabs = QtWidgets.QTabWidget(dialog)
+        working = QtWidgets.QPlainTextEdit(dialog)
+        working.setObjectName("legacy-recovery-working-preview")
+        working.setReadOnly(True)
+        baseline = QtWidgets.QPlainTextEdit(dialog)
+        baseline.setReadOnly(True)
+        tabs.addTab(working, "Working text")
+        tabs.addTab(baseline, "Saved baseline")
+        layout.addWidget(tabs)
+
+        def show_version(index):
+            candidate = candidates[index]
+            working.setPlainText(candidate["text"])
+            baseline.setPlainText(candidate.get("clean_text") or "")
+            undo = candidate.get("undo", candidate.get("history", []))
+            redo = candidate.get("redo", [])
+            metadata.setText(f"Undo steps: {len(undo)}   Redo steps: {len(redo)}")
+
+        versions.currentIndexChanged.connect(show_version)
+        show_version(0)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText(
+            "Use this version"
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        return document_id, versions.currentIndex()
+
+    def resolvePeerLegacyRecovery(self, document_id=None, candidate_index=None):
+        """Publish an explicit choice before making it a live editable buffer."""
+        choices = self.legacyPeerRecoveryChoices()
+        if candidate_index is None:
+            chooser = getattr(
+                self, "_peerLegacyRecoveryChooser", self._choosePeerLegacyRecovery
+            )
+            selected = chooser(choices, document_id)
+            if selected is None:
+                return False
+            document_id, candidate_index = selected
+        owner = self._peerWorkspaces.active_workspace_id
+        if owner is None:
+            self._peerStatusService.showMessage(
+                "Open a workspace before recovering a buffer."
+            )
+            return False
+        if (
+            document_id not in choices
+            or type(candidate_index) is not int
+            or not 0 <= candidate_index < len(choices[document_id])
+        ):
+            self._peerStatusService.showMessage("Invalid legacy recovery selection.")
+            return False
+        try:
+            # Retain unrelated pending edits before the selection transaction.
+            self._peerRetentionCoordinator.edit()
+            if not self._peerRetentionCoordinator.flush():
+                raise RuntimeError("pending editing state could not be retained")
+            selected = self._peerWorkspaceStore.select_legacy_recovery(
+                document_id,
+                candidate_index,
+                workspace_id=str(owner),
+            )
+            self._peerDocumentResources.adopt_retained_document(
+                selected.state.shared_resources,
+                document_id,
+            )
+            self._peerWorkspacePersistenceLoad = selected
+            self._peerPersistedDocumentResources = deepcopy(
+                dict(selected.state.shared_resources)
+            )
+            selection = selected.state.application_state["legacy_recovery"][
+                "selections"
+            ][document_id]
+            view_id = self._PeerApplicationIdentity(
+                self._PeerIdentityKind.VIEW, selection["view_id"]
+            )
+            self._reopenPeerRetainedView(view_id, workspace_id=owner)
+            self._peerRetentionCoordinator.edit()
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+            self._peerStatusService.showMessage("Legacy recovery failed: " + str(error))
+            return False
+        self._peerStatusService.showMessage(
+            "Legacy buffer recovered; alternative versions remain retained."
+        )
         return True
 
     def retainedPeerBufferChoices(self):
@@ -2785,12 +3086,11 @@ class MainWindow(_ApplicationHostBase):
             descriptor = self._peerDocumentResources.retained_view(view_id)
             resource = self._peerDocumentResources.resource(descriptor.document_id)
             name = resource.path or f"Untitled ({descriptor.document_id})"
-            workspace = self._peerWorkspaces.descriptor(
-                descriptor.workspace_id
-            ).name
+            workspace = self._peerWorkspaces.descriptor(descriptor.workspace_id).name
             choices.append(
                 {
-                    "label": name + (" *" if resource.is_dirty() else "")
+                    "label": name
+                    + (" *" if resource.is_dirty() else "")
                     + f" — {workspace} — view {view_id}",
                     "view_id": view_id,
                     "document_id": descriptor.document_id,
@@ -3138,14 +3438,24 @@ class MainWindow(_ApplicationHostBase):
         return True
 
     def _requestPeerFrameClose(self, frame_id):
-        result = self._peerWorkspace.request_close_frame(
+        workspace = next((
+            self._peerRuntimeCatalog.runtime(identity).model
+            for identity in self._peerRuntimeCatalog.identities
+            if frame_id in self._peerRuntimeCatalog.runtime(identity).model.frames
+        ), None)
+        if workspace is None:
+            return self._PeerOperationResult(self._PeerOperationStatus.INVALID, "unknown frame")
+        result = workspace.request_close_frame(
             frame_id, self._resolvePeerClose
         )
         self._afterPeerTopologyClose(result)
         return result
 
     def _requestPeerPaneClose(self, pane_id):
-        result = self._peerWorkspace.request_close_pane(
+        owner = self._peerWorkspaces.pane_owner(pane_id)
+        if owner is None:
+            return self._PeerOperationResult(self._PeerOperationStatus.INVALID, "unknown pane")
+        result = self._peerWorkspaces.model(owner).request_close_pane(
             pane_id, self._resolvePeerClose
         )
         self._afterPeerTopologyClose(result)
@@ -3155,7 +3465,10 @@ class MainWindow(_ApplicationHostBase):
         lifecycle = getattr(self, "_peerApplicationLifecycle", None)
         if (
             result.applied
-            and not self._peerWorkspace.frames
+            and not any(
+                self._peerRuntimeCatalog.runtime(identity).model.frames
+                for identity in self._peerRuntimeCatalog.identities
+            )
             and lifecycle is not None
             and not getattr(self, "_peerClosingWorkspace", False)
             and not getattr(self, "_peerApplicationExitRequested", False)
