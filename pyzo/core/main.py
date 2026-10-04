@@ -2266,7 +2266,12 @@ class MainWindow(_ApplicationHostBase):
                     if dock is dock_widget:
                         pyzo.editors.setActiveGroup(host)
                         return
+                for host, dock in runtime.shell_hosts.items():
+                    if dock is dock_widget:
+                        pyzo.shells.setActiveHost(host)
+                        return
                 return
+            return
         for host, dock in self._editorHosts.items():
             if dock_widget is dock:
                 pyzo.editors.setActiveGroup(host)
@@ -2279,19 +2284,21 @@ class MainWindow(_ApplicationHostBase):
     def _activatePeerPaneForWidget(self, widget):
         if not self._peerFrameMode or not isinstance(widget, QtWidgets.QWidget):
             return
-        for pane_id, dock in self._peerBackend.docks.items():
-            content = dock.widget()
-            if content is None:
-                continue
-            if widget is not content and not content.isAncestorOf(widget):
-                continue
-            self._peerBackend._focused_dock_widget_changed(dock)
-            self._onFocusedDockWidgetChanged(dock)
-            if pane_id.startswith("editor-") and hasattr(
-                self, "_peerStatusService"
-            ):
-                self.statusBar().updateCursorInfo(pyzo.editors.getCurrentEditor())
-            return
+        for identity in self._peerRuntimeCatalog.identities:
+            backend = self._peerRuntimeCatalog.runtime(identity).backend
+            for pane_id, dock in backend.docks.items():
+                content = dock.widget()
+                if content is None:
+                    continue
+                if widget is not content and not content.isAncestorOf(widget):
+                    continue
+                backend._focused_dock_widget_changed(dock)
+                self._onFocusedDockWidgetChanged(dock)
+                if pane_id.startswith("editor-") and hasattr(
+                    self, "_peerStatusService"
+                ):
+                    self.statusBar().updateCursorInfo(pyzo.editors.getCurrentEditor())
+                return
 
     def _togglePeerStatusBar(self, _context):
         visible = not self.statusBar().isVisible()
