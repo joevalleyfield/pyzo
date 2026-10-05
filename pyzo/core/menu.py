@@ -1866,6 +1866,14 @@ class RunMenu(Menu):
 
         self._executionTargetAction = self.addAction("")
         self._executionTargetAction.setEnabled(False)
+        from pyzo.core.selectionTargetMenu import SelectionTargetMenu
+
+        self._selectionTargetMenu = SelectionTargetMenu(
+            self,
+            service=lambda: getattr(pyzo.application, "workspace_execution", None),
+            current_editor=lambda: pyzo.editors.getCurrentEditor(),
+        )
+        self.addMenu(self._selectionTargetMenu)
         self.addSeparator()
 
         self.addItem(
@@ -1979,7 +1987,14 @@ class RunMenu(Menu):
 
         shell = pyzo.shells.getExecutionShell()
         target = shellTitle(shell) if shell is not None else "None"
-        self._executionTargetAction.setText("Execution target: " + target)
+        peer_selection = getattr(pyzo.application, "workspace_execution", None)
+        prefix = (
+            "File/Main/cell target: "
+            if peer_selection is not None
+            else "Execution target: "
+        )
+        self._executionTargetAction.setText(prefix + target)
+        self._selectionTargetMenu.refresh()
 
     def _showHelp(self):
         """Show more information about ways to run code."""
@@ -2450,7 +2465,7 @@ class KeyMapModel(QtCore.QAbstractItemModel):
         childMenu = childAction.parent()
         if childMenu is not parentMenu and childMenu.actions():
             childAction = childMenu
-        if isinstance(childMenu, Menu) and getattr(
+        if isinstance(childMenu, QtWidgets.QMenu) and getattr(
             childMenu, "_hide_in_key_map_dialog", False
         ):
             childAction = Menu._dummyActionForHiddenEntryInKeyMapDialog

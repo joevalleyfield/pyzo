@@ -1258,6 +1258,8 @@ class PythonShell(BaseShell):
     def connectToKernel(self, info):
         """Create kernel and connect to it."""
 
+        # Retire the previous connection before preparing its replacement.
+        self._brokerConnection = None
         # Create yoton context
         self._context = ct = yoton.Context()
 
@@ -1797,6 +1799,9 @@ class PythonShell(BaseShell):
         In general, the broker will not close the connection, so it can
         be considered an error-state if this function is called.
         """
+
+        if c is not getattr(self, "_brokerConnection", None):
+            return
 
         # Stop context
         if self._context:
