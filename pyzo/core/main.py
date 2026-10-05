@@ -1328,9 +1328,13 @@ class MainWindow(_ApplicationHostBase):
                 self._peerWorkspaces,
                 self._peerStatusService.showMessage,
                 editor_is_live=pyzo.application.documents.is_bound,
+                main_path_is_available=os.path.isfile,
             )
             pyzo.application.workspace_execution = self._peerSelectionExecution
             pyzo.runCommands.set_selection_execution(self._peerSelectionExecution)
+            pyzo.runCommands.set_main_services(
+                self._peerMainEditor, self._peerMainChanged
+            )
             for host in pyzo.shells.hosts:
                 self._bindPeerShellLifecycle(host)
             pyzo.workspaceSession = WorkspaceSessionService(
@@ -1707,13 +1711,7 @@ class MainWindow(_ApplicationHostBase):
                     self._PeerIdentityKind.VIEW, view_id
                 )
                 editor.setPlainText(record.get("text", ""))
-                metadata = self._peerDocumentResources._persistence_extensions.get(
-                    "legacy_recovery_selections", {}
-                ).get(document_id, {})
-                if "use_bom" in metadata:
-                    editor.useBom = bool(metadata["use_bom"])
-                if metadata.get("line_endings") in {"LF", "CRLF", "CR"}:
-                    editor.lineEndings = metadata["line_endings"]
+                self._restorePeerEditorFileFormat(editor)
                 editor.document().setModified(
                     record.get("clean_text") != record.get("text")
                 )
@@ -2707,15 +2705,16 @@ class MainWindow(_ApplicationHostBase):
                     pinned=item.pinned,
                 ),
             )
-        mains = self._peerPersistedDocumentResources.get("mains", {})
+        # The registry owns live mains. Consume a legacy flag only during the
+        # initial document migration; binding/reopening must never replay a main.
         if (
-            isinstance(mains, dict)
-            and mains.get(str(runtime.identity)) == str(document_id)
+            not self._peerPersistedDocumentResources.get("documents")
+            and host._tabs._mainFile == item.id
             and item.filename
+            and self._peerDocumentResources.main(runtime.identity) is None
         ):
-            self._peerDocumentResources.set_main(
-                runtime.identity, document_id
-            )
+            self._peerDocumentResources.set_main(runtime.identity, document_id)
+        host._tabs._mainFile = ""
         lifecycle = _PyzoEditorDocumentLifecycle(self, pane_id, item, document_id)
         policy = self._peerDocumentViews.register_view(
             pane_id,
@@ -2779,6 +2778,60 @@ class MainWindow(_ApplicationHostBase):
         dialog.exec()
         return "retry" if dialog.clickedButton() is retry else "cancel"
 
+    def _restorePeerEditorFileFormat(self, editor):
+        document_id = editor._peerDocumentIdentity
+        resource = self._peerDocumentResources.resource(document_id)
+        metadata = self._peerDocumentResources._persistence_extensions.get(
+            "legacy_recovery_selections", {}
+        ).get(str(document_id), {})
+        metadata = self._peerDocumentResources._persistence_extensions.get(
+            "editor_file_formats", {}
+        ).get(str(document_id), metadata)
+        if "use_bom" in metadata:
+            editor.useBom = bool(metadata["use_bom"])
+        if metadata.get("line_endings") in {"LF", "CRLF", "CR"}:
+            editor.lineEndings = metadata["line_endings"]
+        # Native saving compares disk bytes with the last clean baseline.
+        # Reconstruct that baseline without treating today's disk as authority.
+        if isinstance(metadata.get("disk_baseline"), str):
+            editor._binaryDataFromFile = base64.b64decode(
+                metadata["disk_baseline"], validate=True
+            )
+        elif resource._clean_text is not None:
+            from pyzo.core.editor import getEncodingFromMagic
+
+            baseline = resource._clean_text.replace("\n", editor.lineEndings)
+            encoding = getEncodingFromMagic(baseline[:200])
+            if encoding == "utf-8" and editor.useBom:
+                encoding = "utf-8-sig"
+            editor._binaryDataFromFile = baseline.encode(encoding)
+
+    def _peerMainChanged(self):
+        for host in pyzo.editors.groups:
+            host._tabs.updateItems()
+        self._peerRetentionCoordinator.edit()
+
+    def _peerMainEditor(self, document_id, workspace_id, *, reopen=True):
+        """Use the native saver; script execution may reopen a retained main view."""
+        documents = self._peerDocumentResources
+        for editor in pyzo.editors:
+            if pyzo.application.documents.is_bound(editor):
+                view = documents.view(editor._peerViewIdentity)
+                if view.document_id == document_id and view.workspace_id == workspace_id:
+                    return editor
+        if not reopen:
+            return None
+        descriptors = documents.retained_views_for_document(document_id)
+        descriptor = next(
+            (item for item in descriptors if item.workspace_id == workspace_id), None
+        )
+        if descriptor is None:
+            view_id = documents.open_view(document_id, workspace_id)
+            documents.close_view(view_id)
+        else:
+            view_id = descriptor.view_id
+        return self._reopenPeerRetainedView(view_id, workspace_id=workspace_id)
+
     def _reopenPeerRetainedView(self, view_id, *, workspace_id=None):
         descriptor = self._peerDocumentResources.retained_view(view_id)
         resource = self._peerDocumentResources.resource(descriptor.document_id)
@@ -2803,13 +2856,7 @@ class MainWindow(_ApplicationHostBase):
             editor._peerViewIdentity = view_id
             editor.setPlainText(resource.text)
             editor.document().setModified(resource.is_dirty())
-            metadata = self._peerDocumentResources._persistence_extensions.get(
-                "legacy_recovery_selections", {}
-            ).get(str(descriptor.document_id), {})
-            if "use_bom" in metadata:
-                editor.useBom = bool(metadata["use_bom"])
-            if metadata.get("line_endings") in {"LF", "CRLF", "CR"}:
-                editor.lineEndings = metadata["line_endings"]
+            self._restorePeerEditorFileFormat(editor)
             state = descriptor.state
             maximum = max(0, editor.document().characterCount() - 1)
             cursor = editor.textCursor()
@@ -4357,7 +4404,7 @@ class MainWindow(_ApplicationHostBase):
             run_menu = peer_menu_bar._menumap["run"]
             shell_menu._updateExecutionTarget()
             run_menu._updateExecutionTarget()
-            assert "Run/Debug target:" in shell_menu._executionTargetAction.text()
+            assert "Debugger target:" in shell_menu._executionTargetAction.text()
             assert second_shell._info.name in shell_menu._executionTargetAction.text()
             assert second_shell._info.name in run_menu._executionTargetAction.text()
             assert shell_menu.getShell() is pyzo.shells.getCurrentShell()

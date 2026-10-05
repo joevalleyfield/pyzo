@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -168,6 +170,13 @@ class DocumentCollectionAccess:
     def persistence_snapshot(self):
         """Capture registry state plus adapter-owned pending transactions."""
 
+        for editor in self._editors:
+            self.remember_file_format(editor)
+        formats = self._registry._persistence_extensions.get("editor_file_formats", {})
+        current_documents = {str(identity) for identity in self._registry.document_ids}
+        for identity in tuple(formats):
+            if identity not in current_documents:
+                del formats[identity]
         snapshot = deepcopy(dict(self._registry.persistence_snapshot()))
         extensions = snapshot.setdefault("extensions", {})
         extensions.pop("peer_document_retention", None)
@@ -223,6 +232,7 @@ class DocumentCollectionAccess:
     def unbind(self, editor):
         """Release editor-scoped retention state before widget destruction."""
 
+        self.remember_file_format(editor)
         self._editors.pop(editor, None)
         for name in (
             "_calmedIntrospectNow",
@@ -420,7 +430,26 @@ class DocumentCollectionAccess:
         identity = self.identity(editor)
         return identity is None or self._registry.can_assign_path(identity, path)
 
+    def remember_file_format(self, editor, *, saved=False):
+        identity = self.identity(editor)
+        if (
+            identity is not None
+            and hasattr(editor, "useBom")
+            and hasattr(editor, "lineEndingsHumanReadable")
+        ):
+            formats = self._registry._persistence_extensions.setdefault(
+                "editor_file_formats", {}
+            )
+            metadata = formats.setdefault(str(identity), {})
+            metadata.update(
+                use_bom=bool(editor.useBom), line_endings=editor.lineEndingsHumanReadable
+            )
+            baseline = getattr(editor, "_binaryDataFromFile", None)
+            if isinstance(baseline, bytes) and (saved or "disk_baseline" not in metadata):
+                metadata["disk_baseline"] = base64.b64encode(baseline).decode("ascii")
+
     def adopt_saved(self, editor, path):
+        self.remember_file_format(editor, saved=True)
         self.flush(editor)
         identity = self.identity(editor)
         if identity is None:

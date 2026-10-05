@@ -847,13 +847,21 @@ class FileTabWidget(CompactTabWidget):
     def getItemAt(self, i):
         return self.tabBar().tabData(i)
 
+    def isMainItem(self, item):
+        documents = getattr(getattr(pyzo, "application", None), "documents", None)
+        if documents is not None and documents.is_bound(item.editor):
+            view = documents.registry.view(item.editor._peerViewIdentity)
+            reference = documents.registry.main(view.workspace_id)
+            return bool(reference and reference.document_id == view.document_id)
+        return item.id == self._mainFile
+
     def mainItem(self):
         """Get the item corresponding to the "main" file.
 
         Returns None if there is no main file.
         """
         for item in self.items():
-            if item.id == self._mainFile:
+            if self.isMainItem(item):
                 return item
         return None
 
@@ -1038,7 +1046,7 @@ class FileTabWidget(CompactTabWidget):
                 tabBar.setTabToolTip(i, item.filename)
 
             # Determine text color. Is main file? Is current?
-            if self._mainFile == item.id:
+            if self.isMainItem(item):
                 color = "#0cf" if pyzo.darkQt else "#008"
             elif i == self.currentIndex():
                 color = "#fff" if pyzo.darkQt else "#000"
@@ -1053,7 +1061,7 @@ class FileTabWidget(CompactTabWidget):
 
             # Update appearance of icon
             but = tabBar.tabButton(i, QtWidgets.QTabBar.ButtonPosition.LeftSide)
-            but.updateIcon(item.dirty, self._mainFile == item.id, item.pinned, nBlocks)
+            but.updateIcon(item.dirty, self.isMainItem(item), item.pinned, nBlocks)
 
         self.fileTabsChanged.emit()
 
@@ -1630,6 +1638,10 @@ class EditorTabs(QtWidgets.QWidget):
             # Return now
             return False
 
+        # Native save may return after canceling an external-change prompt.
+        if editor.document().isModified():
+            return False
+
         if documents is not None:
             documents.adopt_saved(editor, filename)
             pyzo.parser.parseThis(editor)
@@ -1841,7 +1853,7 @@ class EditorTabs(QtWidgets.QWidget):
             # Add whether pinned or main file
             if item.pinned:
                 info.append("pinned")
-            if item.id == self._tabs._mainFile:
+            if self._tabs.isMainItem(item):
                 info.append("main")
 
             # Add to state
@@ -1972,7 +1984,7 @@ class HistList(QtWidgets.QDialog):
                 flags.append("MOD.")
             if item.pinned:
                 flags.append("PIN.")
-            if item.id == self._tabs._mainFile:
+            if self._tabs.isMainItem(item):
                 flags.append("MAINF.")
             if flags:
                 label = "[{}] {}".format(", ".join(flags), item.id)

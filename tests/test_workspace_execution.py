@@ -217,7 +217,7 @@ def test_broken_assignment_stays_visible_until_reconnect_or_correction(world):
     service.foreground_shell(world.shells[1])
     result = service.resolve_selection(world.editors[0])
     assert result.status is RoutingStatus.BROKEN_TARGET
-    assert "Selection target" in world.messages[-1]
+    assert "Execution target" in world.messages[-1]
     assert not service.dispatch(old, lambda _: pytest.fail("stale send"))
     assigned._version = "3.12"
     fresh = token(world)
@@ -318,7 +318,7 @@ def test_assignment_refuses_invalid_choice_without_changing_existing_target(
             service.router.view_state(editor._peerViewIdentity).assignment.shell_id
             == service._shells[assigned].identity
         )
-    assert "Could not change Selection target" in world.messages[-1]
+    assert "Could not change execution target" in world.messages[-1]
 
 
 @pytest.mark.parametrize(
@@ -384,3 +384,78 @@ def test_dispatch_checks_native_owner_even_if_router_state_drifts(world):
     sends = []
     assert not service.dispatch(wrong, sends.append)
     assert sends == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "execute-cell",
+        "execute-file",
+        "execute-main",
+        "run-file-as-script",
+        "run-main-as-script",
+    ],
+)
+@pytest.mark.parametrize("explicit", [False, True])
+def test_all_editor_commands_share_local_view_resolver(world, command, explicit):
+    from spikes.peer_frames.execution_routing import ExecutionCommand
+
+    service = world.service
+    first, alternate, foreign = world.shells
+    service.foreground_shell(alternate)
+    service.foreground_shell(foreign)
+    if explicit:
+        assert service.assign_selection(world.editors[0], first).applied
+    resolved = service.resolve_editor(world.editors[0], ExecutionCommand(command))
+    assert resolved.resolved
+    receipt = resolved.provenance
+    assert receipt.command.value == command and receipt.workspace_id == world.a
+    assert receipt.assignment_mode is (
+        AssignmentMode.EXPLICIT if explicit else AssignmentMode.IMPLICIT
+    )
+    sends = []
+    assert service.dispatch(receipt, sends.append)
+    assert sends == [first if explicit else alternate]
+    assert receipt.policy.autosave is command.startswith("run-")
+
+
+def test_main_source_is_retained_workspace_reference_and_revalidates(world):
+    from spikes.peer_frames.execution_routing import ExecutionCommand
+
+    service = world.service
+    first = world.editors[0]
+    main = world.docs.create_document("main_value = 81", path="/main-a.py", dirty=True)
+    other = world.docs.create_document("main_value = 82", path="/main-b.py")
+    world.docs.set_main(world.a, main)
+    world.docs.set_main(world.b, other)
+    receipt = service.resolve_editor(first, ExecutionCommand.EXECUTE_MAIN).provenance
+    source = service.file_source(receipt, main=True)
+    assert (source.document_id, source.text, source.filename) == (
+        main,
+        "main_value = 81",
+        "/main-a.py",
+    )
+    assert service.validate_file(receipt, source)
+    world.docs.rename_document(main, "/renamed-main.py")
+    assert service.validate_file(
+        receipt, source
+    )  # Identity survives explicit save/rename.
+    world.docs.set_main(world.a, other)
+    assert not service.validate_file(receipt, source)
+    assert world.messages
+
+
+@pytest.mark.parametrize("state", ["missing", "unavailable"])
+def test_main_missing_or_unavailable_is_visible_without_fallback(world, state):
+    from spikes.peer_frames.execution_routing import ExecutionCommand
+
+    service = world.service
+    if state == "unavailable":
+        doc = world.docs.create_document("x = 1", path="/missing.py")
+        world.docs.set_main(world.a, doc)
+        world.docs.mark_unavailable(doc)
+    receipt = service.resolve_editor(
+        world.editors[0], ExecutionCommand.EXECUTE_MAIN
+    ).provenance
+    assert service.file_source(receipt, main=True) is None
+    assert "main" in world.messages[-1].lower()

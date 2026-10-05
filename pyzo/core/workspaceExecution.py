@@ -1,10 +1,10 @@
-"""Live workspace boundary for Execute Selection.
+"""Live workspace boundary for editor execution.
 
 Native shell identity survives restart; kernel generation does not. This service
-does not change the compatibility File/Main execution target or migrate shells.
+does not migrate shells or change debugger/tool ownership.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from spikes.peer_frames.execution_routing import (
     AssignmentMode,
@@ -25,6 +25,14 @@ class _ShellBinding:
     pane_id: str
     identity: object
     context: object
+
+
+@dataclass(frozen=True)
+class FileExecutionSource:
+    document_id: object
+    text: str
+    filename: str
+    main: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,12 +59,21 @@ class SelectionTargetSnapshot:
 
 
 class LiveWorkspaceExecution:
-    def __init__(self, documents, workspaces, show_message, *, editor_is_live):
+    def __init__(
+        self,
+        documents,
+        workspaces,
+        show_message,
+        *,
+        editor_is_live,
+        main_path_is_available=lambda path: True,
+    ):
         self.router = ExecutionRouter()
         self._documents = documents
         self._workspaces = workspaces
         self._show_message = show_message
         self._editor_is_live = editor_is_live
+        self._main_path_is_available = main_path_is_available
         self._registered_workspaces = set()
         self._views = {}
         self._shells = {}
@@ -169,7 +186,7 @@ class LiveWorkspaceExecution:
             self.sync_shell(shell)
 
     def _refuse(self, detail, status=RoutingStatus.NO_TARGET):
-        self._show_message("Could not execute selection: " + detail)
+        self._show_message("Could not execute: " + detail)
         return ExecutionResolution(status, detail)
 
     def _editor_view(self, editor):
@@ -231,7 +248,7 @@ class LiveWorkspaceExecution:
         )
 
     def _assignment_refusal(self, detail):
-        self._show_message("Could not change Selection target: " + detail)
+        self._show_message("Could not change execution target: " + detail)
         return RoutingResult(RoutingStatus.INVALID, detail)
 
     def _assignment_view(self, editor, context):
@@ -242,7 +259,7 @@ class LiveWorkspaceExecution:
         if context is not None and context != self._context(view):
             return (
                 None,
-                "the captured editor view has changed; reopen Selection target.",
+                "the captured editor view has changed; reopen Execution target.",
             )
         return view, ""
 
@@ -269,6 +286,15 @@ class LiveWorkspaceExecution:
         return self.router.clear_assignment(view.identity)
 
     def resolve_selection(self, editor, *, line=False):
+        return self.resolve_editor(
+            editor,
+            ExecutionCommand.EXECUTE_LINE
+            if line
+            else ExecutionCommand.EXECUTE_SELECTION,
+        )
+
+    def resolve_editor(self, editor, command):
+        """Capture one invoking view for every editor-originated Run variant."""
         self._synchronize()
         view, detail = self._editor_view(editor)
         if view is None:
@@ -283,19 +309,109 @@ class LiveWorkspaceExecution:
             ):
                 return self._refuse("this workspace has no eligible foreground shell.")
         result = self.router.resolve(
-            ExecutionCommand.EXECUTE_LINE
-            if line
-            else ExecutionCommand.EXECUTE_SELECTION,
+            command,
             view_id=view.identity,
         )
         if not result.resolved:
             if result.status is RoutingStatus.BROKEN_TARGET:
                 return self._refuse(
-                    "the assigned shell is unavailable. Choose a local shell or Workspace foreground under Run > Selection target.",
+                    "the assigned shell is unavailable. Choose a local shell or Workspace foreground under Run > Execution target.",
                     result.status,
                 )
             return self._refuse(result.detail, result.status)
+        if command in (
+            ExecutionCommand.RUN_FILE_AS_SCRIPT,
+            ExecutionCommand.RUN_MAIN_AS_SCRIPT,
+        ):
+            binding = self._binding_for_identity(result.provenance.shell_id)
+            if getattr(binding.shell, "_startup_info", {}).get("ipython") == "yes":
+                # Preserve Pyzo's existing in-process %run -i branch truthfully.
+                result = replace(
+                    result,
+                    provenance=replace(
+                        result.provenance,
+                        policy=replace(result.provenance.policy, recycle=False),
+                    ),
+                )
         return result
+
+    def file_source(self, provenance, *, main=False):
+        if not self.provenance_is_current(provenance):
+            self._refuse("the invoking view or shell has changed.")
+            return None
+        if main:
+            reference = self._documents.main(provenance.workspace_id)
+            if (
+                reference is None
+                or not reference.available
+                or not self._main_path_is_available(reference.path)
+            ):
+                self._refuse(
+                    "this workspace's main document is missing or unavailable."
+                )
+                return None
+            document_id = reference.document_id
+        else:
+            document_id = self._documents.view(provenance.view_id).document_id
+        resource = self._documents.resource(document_id)
+        return FileExecutionSource(
+            document_id, resource.text, resource.path or "<tmp>", main
+        )
+
+    def validate_file(self, provenance, source):
+        """Recheck intent after save dialogs; a same-document Save As is allowed."""
+        valid = self.provenance_is_current(provenance)
+        if valid and source.main:
+            reference = self._documents.main(provenance.workspace_id)
+            valid = bool(
+                reference
+                and reference.available
+                and self._main_path_is_available(reference.path)
+                and reference.document_id == source.document_id
+            )
+        elif valid:
+            valid = (
+                self._documents.view(provenance.view_id).document_id
+                == source.document_id
+            )
+        if not valid:
+            self._refuse(
+                "the captured view, main document or shell has changed; invoke the command again."
+            )
+        return valid
+
+    def source_editor_context(self, editor, provenance, source, *, context=None):
+        view, detail = self._assignment_view(editor, context)
+        if (
+            view is None
+            or view.document_id != source.document_id
+            or view.workspace_id != provenance.workspace_id
+        ):
+            self._refuse(detail or "the script's source view has changed.")
+            return None
+        return self._context(view)
+
+    def validate_editor_context(self, editor, context):
+        view, detail = self._assignment_view(editor, context)
+        if view is None:
+            self._assignment_refusal(detail)
+            return False
+        return True
+
+    def toggle_main(self, editor, *, context=None):
+        view, detail = self._assignment_view(editor, context)
+        if view is None:
+            return self._assignment_refusal(detail)
+        if not self._documents.resource(view.document_id).path:
+            return self._assignment_refusal(
+                "save the document before designating it as main."
+            )
+        reference = self._documents.main(view.workspace_id)
+        if reference and reference.document_id == view.document_id:
+            self._documents.clear_main(view.workspace_id)
+        else:
+            self._documents.set_main(view.workspace_id, view.document_id)
+        return RoutingResult(RoutingStatus.APPLIED)
 
     def provenance_is_current(self, provenance):
         self._synchronize()
@@ -316,7 +432,7 @@ class LiveWorkspaceExecution:
     def dispatch(self, provenance, send):
         if not self.provenance_is_current(provenance):
             self._refuse(
-                "the captured view or shell has changed; invoke Selection again."
+                "the captured view or shell has changed; invoke the command again."
             )
             return False
         send(self._binding_for_identity(provenance.shell_id).shell)

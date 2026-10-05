@@ -104,10 +104,33 @@ class RunCommandService(QtCore.QObject):
         self._translate = translate
         self._dialogParent = dialog_parent
         self._selectionExecution = None
+        self._mainEditor = None
+        self._mainChanged = lambda: None
 
     def set_selection_execution(self, service):
-        """Install the peer Selection route independently of File/Main Run."""
+        """Install workspace routing for all editor execution commands."""
         self._selectionExecution = service
+
+    def set_main_services(self, editor_provider, changed):
+        self._mainEditor = editor_provider
+        self._mainChanged = changed
+
+    def toggle_main(self, editor):
+        execution = self._selectionExecution
+        context = execution.selection_targets(editor).context
+        if context is None:
+            return False
+        if not editor._filename:
+            if not self._editors.saveFile(editor):
+                return False
+            if not execution.validate_editor_context(editor, context):
+                return False
+            if not editor._filename or editor.document().isModified():
+                return False
+        result = execution.toggle_main(editor, context=context)
+        if result.applied:
+            self._mainChanged()
+        return result.applied
 
     def get_shell_and_editor(self, what, main_editor=False, given_editor=None):
         message = ""
@@ -221,12 +244,23 @@ class RunCommandService(QtCore.QObject):
         editor.setTextCursor(cursor)
 
     def run_cell_advance(self):
-        self.run_cell(advance=True)
+        return self.run_cell(advance=True)
 
     def run_cell(self, advance=False):
-        shell, editor = self.get_shell_and_editor("cell")
-        if not shell or not editor:
-            return
+        execution = self._selectionExecution
+        if execution is None:
+            shell, editor = self.get_shell_and_editor("cell")
+            if not shell or not editor:
+                return
+            provenance = None
+        else:
+            from spikes.peer_frames.execution_routing import ExecutionCommand
+
+            editor = self._editors.getCurrentEditor()
+            resolved = execution.resolve_editor(editor, ExecutionCommand.EXECUTE_CELL)
+            if not resolved.resolved:
+                return
+            provenance = resolved.provenance
 
         cell_name = ""
         if editor.parser().name().startswith("python"):
@@ -277,12 +311,75 @@ class RunCommandService(QtCore.QObject):
 
         code = run_cursor.selectedText().replace("\u2029", "\n")
         self._show_what_to_execute(editor, run_cursor)
-        shell.executeCode(code, editor.id(), line_number, cell_name or " ")
+        filename = editor.id()
+
+        def send(shell):
+            shell.executeCode(code, filename, line_number, cell_name or " ")
+
+        if execution is None:
+            send(shell)
+        elif not execution.dispatch(provenance, send):
+            return
         if advance:
-            self._advance(run_cursor)
+            self._advance(run_cursor, editor=editor)
+        return provenance
 
     def run_file(self, run_mode, given_editor=None):
         as_script, main_file = run_mode
+        execution = self._selectionExecution
+        if execution is not None:
+            from spikes.peer_frames.execution_routing import ExecutionCommand
+
+            invoking_editor = given_editor or self._editors.getCurrentEditor()
+            command = (
+                (
+                    ExecutionCommand.RUN_MAIN_AS_SCRIPT
+                    if main_file
+                    else ExecutionCommand.RUN_FILE_AS_SCRIPT
+                )
+                if as_script
+                else (
+                    ExecutionCommand.EXECUTE_MAIN
+                    if main_file
+                    else ExecutionCommand.EXECUTE_FILE
+                )
+            )
+            resolved = execution.resolve_editor(invoking_editor, command)
+            if not resolved.resolved:
+                return
+            provenance = resolved.provenance
+            source = execution.file_source(provenance, main=main_file)
+            if source is None:
+                return
+            if as_script:
+                editor = (
+                    self._mainEditor(source.document_id, provenance.workspace_id)
+                    if main_file
+                    else invoking_editor
+                )
+                if editor is None or not execution.validate_file(provenance, source):
+                    return
+                if self._run_script(editor, provenance=provenance, source=source):
+                    return provenance
+                return
+            if not main_file:
+                filename, text = self._get_code_of_file(invoking_editor)
+            else:
+                filename, text = source.filename, source.text
+                if self._mainEditor is not None:
+                    editor = self._mainEditor(
+                        source.document_id, provenance.workspace_id, reopen=False
+                    )
+                    if editor is not None:
+                        self._show_what_to_execute(editor)
+            if execution.validate_file(provenance, source) and execution.dispatch(
+                provenance,
+                lambda shell: shell.executeCode(
+                    text, filename, changeDir=self._config.settings.changeDirOnFileExec
+                ),
+            ):
+                return provenance
+            return
         description = "main file" if main_file else "file"
         if as_script:
             description += self._translate("menu", " (as script)")
@@ -313,18 +410,45 @@ class RunCommandService(QtCore.QObject):
         self._show_what_to_execute(editor)
         return editor.id(), text
 
-    def _run_script(self, editor, shell):
+    def _run_script(self, editor, shell=None, *, provenance=None, source=None):
+        execution = self._selectionExecution
+        if provenance is not None:
+            if not execution.validate_file(provenance, source):
+                return False
+            context = execution.source_editor_context(editor, provenance, source)
+            if context is None:
+                return False
         save_ok = self._editors.saveFile(editor)
+        if provenance is not None:
+            if not execution.validate_file(provenance, source):
+                return False
+            if (
+                execution.source_editor_context(
+                    editor, provenance, source, context=context
+                )
+                is None
+            ):
+                return False
         if save_ok and not editor.document().isModified():
             self._show_what_to_execute(editor)
-            if shell._startup_info.get("ipython", "") == "yes":
-                directory = os.path.normpath(
-                    os.path.normcase(os.path.dirname(editor._filename))
-                )
-                shell._ctrl_command.send(f'%cd "{directory}"\n')
-                shell._ctrl_command.send(f'%run -i "{editor._filename}"\n')
-            else:
-                shell.restart(editor._filename)
+            filename = editor._filename
+
+            def send(shell):
+                if shell._startup_info.get("ipython", "") == "yes":
+                    directory = os.path.normpath(
+                        os.path.normcase(os.path.dirname(filename))
+                    )
+                    shell._ctrl_command.send(f'%cd "{directory}"\n')
+                    shell._ctrl_command.send(f'%run -i "{filename}"\n')
+                else:
+                    shell.restart(filename)
+
+            if provenance is None:
+                send(shell)
+                return True
+            if execution.validate_file(provenance, source):
+                return execution.dispatch(provenance, send)
+            return False
         else:
             dialog = QtWidgets.QMessageBox(self._dialogParent())
             dialog.setWindowTitle(

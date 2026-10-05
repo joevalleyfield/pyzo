@@ -1276,7 +1276,12 @@ class ShellMenu(Menu):
 
         shell = pyzo.shells.getExecutionShell()
         target = shellTitle(shell) if shell is not None else "None"
-        action.setText("Run/Debug target: " + target)
+        prefix = (
+            "Debugger target: "
+            if getattr(pyzo.application, "workspace_execution", None) is not None
+            else "Run/Debug target: "
+        )
+        action.setText(prefix + target)
 
     def build(self):
         """Create the items for the shells menu"""
@@ -1410,7 +1415,9 @@ class ShellContextMenu(ShellMenu):
         self.buildShellActions()
 
         self.addItem(
-            "Use as Run/Debug target",
+            "Use as debugger target"
+            if getattr(pyzo.application, "workspace_execution", None) is not None
+            else "Use as Run/Debug target",
             None,
             self._useAsExecutionTarget,
         )
@@ -1519,7 +1526,9 @@ class ShellTabContextMenu(ShellContextMenu):
         """Build menu"""
         self.buildShellActions()
         self.addItem(
-            "Use as Run/Debug target",
+            "Use as debugger target"
+            if getattr(pyzo.application, "workspace_execution", None) is not None
+            else "Use as Run/Debug target",
             None,
             self._useAsExecutionTarget,
         )
@@ -1842,7 +1851,9 @@ class EditorTabContextMenu(Menu):
         elif action == "pin":
             item._pinned = not item._pinned
         elif action == "main":
-            if pyzo.editors._tabs._mainFile == item.id:
+            if getattr(pyzo.application, "workspace_execution", None) is not None:
+                pyzo.runCommands.toggle_main(item.editor)
+            elif pyzo.editors._tabs._mainFile == item.id:
                 pyzo.editors._tabs._mainFile = None
             else:
                 pyzo.editors._tabs._mainFile = item.id
@@ -1988,12 +1999,8 @@ class RunMenu(Menu):
         shell = pyzo.shells.getExecutionShell()
         target = shellTitle(shell) if shell is not None else "None"
         peer_selection = getattr(pyzo.application, "workspace_execution", None)
-        prefix = (
-            "File/Main/cell target: "
-            if peer_selection is not None
-            else "Execution target: "
-        )
-        self._executionTargetAction.setText(prefix + target)
+        self._executionTargetAction.setVisible(peer_selection is None)
+        self._executionTargetAction.setText("Execution target: " + target)
         self._selectionTargetMenu.refresh()
 
     def _showHelp(self):

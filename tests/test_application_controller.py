@@ -255,3 +255,37 @@ def test_peer_application_controller_is_a_non_window_service_boundary():
         ("can-save", "document-a", "collision.py"),
         ("saved", "document-a", "saved.py", "after"),
     ]
+
+
+
+def test_native_file_format_and_clean_bytes_survive_snapshot_and_stale_view():
+    import base64
+    from pyzo.core.applicationController import DocumentCollectionAccess
+    from spikes.peer_frames.document_resources import DocumentResourceRegistry
+
+    registry = DocumentResourceRegistry()
+    identity = registry.create_document("before", path="/saved.py")
+    access = DocumentCollectionAccess(registry)
+    editor = Editor()
+    editor._peerDocumentIdentity = identity
+    editor.useBom = True
+    editor.lineEndingsHumanReadable = "CRLF"
+    editor._binaryDataFromFile = b"\xef\xbb\xbfbefore\r\n"
+    access._editors[editor] = editor
+    snapshot = access.persistence_snapshot()
+    metadata = snapshot["extensions"]["editor_file_formats"][str(identity)]
+    assert metadata["use_bom"] and metadata["line_endings"] == "CRLF"
+    assert base64.b64decode(metadata["disk_baseline"]) == editor._binaryDataFromFile
+    editor._binaryDataFromFile = b"\xef\xbb\xbfafter\r\n"
+    assert access.adopt_saved(editor, "/saved.py").applied
+    stale = Editor()
+    stale._peerDocumentIdentity = identity
+    stale.useBom = True
+    stale.lineEndingsHumanReadable = "CRLF"
+    stale._binaryDataFromFile = b"\xef\xbb\xbfbefore\r\n"
+    access.remember_file_format(stale)
+    metadata = access.persistence_snapshot()["extensions"]["editor_file_formats"][str(identity)]
+    assert base64.b64decode(metadata["disk_baseline"]) == editor._binaryDataFromFile
+    access._editors.clear()
+    assert registry.forget_document(identity)
+    assert access.persistence_snapshot()["extensions"]["editor_file_formats"] == {}

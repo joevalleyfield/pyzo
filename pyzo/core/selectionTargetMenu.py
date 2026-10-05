@@ -1,4 +1,4 @@
-"""Selection-target projection; callbacks retain the invoking live view."""
+"""Execution-target projection; callbacks retain the invoking live view."""
 
 from pyzo.qt import QtGui, QtWidgets
 from spikes.peer_frames.execution_routing import AssignmentMode
@@ -8,7 +8,7 @@ class SelectionTargetMenu(QtWidgets.QMenu):
     _hide_in_key_map_dialog = True
 
     def __init__(self, parent=None, *, service, current_editor):
-        super().__init__("Selection target", parent)
+        super().__init__("Execution target", parent)
         self.menuPath = getattr(parent, "menuPath", "run") + "__selection_target"
         self._service = service
         self._current_editor = current_editor
@@ -27,7 +27,7 @@ class SelectionTargetMenu(QtWidgets.QMenu):
             return
         editor = self._current_editor()
         snapshot = service.selection_targets(editor)
-        self.setTitle("Selection target")
+        self.setTitle("Execution target")
         if snapshot.context is None:
             self.addAction("No live editor selected").setEnabled(False)
             return
@@ -59,9 +59,9 @@ class SelectionTargetMenu(QtWidgets.QMenu):
                 )
             )
             if assigned:
-                self.setTitle("Selection target: " + target.label + " (assigned)")
+                self.setTitle("Execution target: " + target.label + " (assigned)")
         if snapshot.assignment.mode is AssignmentMode.BROKEN:
-            self.setTitle("Selection target: assigned shell unavailable")
+            self.setTitle("Execution target: assigned shell unavailable")
             action = choice(
                 "Assigned shell unavailable: " + snapshot.assigned_label, True
             )
