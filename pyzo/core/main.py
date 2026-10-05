@@ -1321,6 +1321,18 @@ class MainWindow(_ApplicationHostBase):
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
+            from pyzo.core.workspaceExecution import LiveWorkspaceExecution
+
+            self._peerSelectionExecution = LiveWorkspaceExecution(
+                self._peerDocumentResources,
+                self._peerWorkspaces,
+                self._peerStatusService.showMessage,
+                editor_is_live=pyzo.application.documents.is_bound,
+            )
+            pyzo.application.workspace_execution = self._peerSelectionExecution
+            pyzo.runCommands.set_selection_execution(self._peerSelectionExecution)
+            for host in pyzo.shells.hosts:
+                self._bindPeerShellLifecycle(host)
             pyzo.workspaceSession = WorkspaceSessionService(
                 self._peerWorkspace,
                 lambda: self._peerBackend.frame_windows,
@@ -2319,6 +2331,9 @@ class MainWindow(_ApplicationHostBase):
                 for host, dock in runtime.shell_hosts.items():
                     if dock is dock_widget:
                         pyzo.shells.setActiveHost(host)
+                        execution = getattr(self, "_peerSelectionExecution", None)
+                        if execution is not None:
+                            execution.foreground_shell(host.getCurrentShell())
                         return
                 return
             return
@@ -3205,15 +3220,17 @@ class MainWindow(_ApplicationHostBase):
         if not self._peerFrameMode:
             return
         pane_id = self._peerBackend._pane_id_from_dock(dock)
-        if pane_id not in self._peerWorkspace.panes:
+        owner = self._peerWorkspaces.pane_owner(pane_id)
+        if owner is None:
             return
-        result = self._peerWorkspace.update_pane_title(pane_id, title)
+        workspace = self._peerWorkspaces.model(owner)
+        result = workspace.update_pane_title(pane_id, title)
         if not result.applied:
             raise RuntimeError(result.detail)
         window = dock.floatingDockContainer()
         if window is not None and (
             len(window.dockWidgets()) == 1
-            or self._peerWorkspace.active_pane_id == pane_id
+            or workspace.active_pane_id == pane_id
         ):
             self._projectPeerFrameMetadata(dock, icon)
 
@@ -3224,7 +3241,11 @@ class MainWindow(_ApplicationHostBase):
             pane_id = self._peerBackend._pane_id_from_dock(dock)
         except ValueError:
             return
-        pane = self._peerWorkspace.panes.get(pane_id)
+        owner = self._peerWorkspaces.pane_owner(pane_id)
+        if owner is None:
+            return
+        runtime = self._peerRuntimeCatalog.runtime(owner)
+        pane = runtime.model.panes.get(pane_id)
         window = dock.floatingDockContainer()
         if pane is None or window is None:
             return
@@ -3233,7 +3254,7 @@ class MainWindow(_ApplicationHostBase):
             host = next(
                 (
                     host
-                    for host, shell_dock in self._shellHosts.items()
+                    for host, shell_dock in runtime.shell_hosts.items()
                     if shell_dock is dock
                 ),
                 None,
@@ -3277,17 +3298,24 @@ class MainWindow(_ApplicationHostBase):
                 pass
 
     def _createShellHost(self):
-        runtime = getattr(self, "_peerRuntime", None)
+        runtime = self._peerActiveRuntime() if self._peerFrameMode else None
+        return self._createShellHostForRuntime(runtime)
+
+    def _createShellHostForRuntime(self, runtime):
         if runtime is not None:
             runtime.shell_host_serial += 1
             serial = runtime.shell_host_serial
         else:
             self._shellHostSerial += 1
             serial = self._shellHostSerial
-        dock = self._QtAds.CDockWidget(self._dockManager, "Shell")
-        dock.setObjectName(f"pyzo-shell-dock-{serial}")
+        suffix = str(serial)
+        if runtime is not None and runtime is not self._peerRuntime:
+            suffix = f"{runtime.identity}-{serial}"
+        manager = runtime.backend.manager if runtime is not None else self._dockManager
+        dock = self._QtAds.CDockWidget(manager, "Shell")
+        dock.setObjectName(f"pyzo-shell-dock-{suffix}")
         host = self._ShellStackWidget(dock)
-        host.setObjectName(f"pyzo-shell-host-{serial}")
+        host.setObjectName(f"pyzo-shell-host-{suffix}")
         features = dock.DockWidgetFeature
         if self._peerFrameMode or pyzo.config.settings.allowFloatingShell:
             dock.setFeatures(features.DockWidgetMovable | features.DockWidgetFloatable)
@@ -3296,14 +3324,16 @@ class MainWindow(_ApplicationHostBase):
         dock.setWidget(host)
         if self._peerFrameMode:
             self._registerPeerDock(
-                f"shell-{serial}",
+                f"shell-{suffix}",
                 self._PeerPaneKind.SHELL,
                 "Shell",
                 dock,
+                runtime=runtime,
             )
         else:
             self._dockManager.addDockWidget(self._QtAds.RightDockWidgetArea, dock)
-        self._shellHosts[host] = dock
+        hosts = runtime.shell_hosts if runtime is not None else self._shellHosts
+        hosts[host] = dock
         host.currentShellStateChanged.connect(
             lambda host=host: self._updateShellDockTitle(host)
         )
@@ -3314,32 +3344,36 @@ class MainWindow(_ApplicationHostBase):
         return host
 
     def _bindPeerShellLifecycle(self, host):
-        dock = self._shellHosts.get(host)
+        runtime = self._peerRuntimeForShellHost(host)
+        dock = runtime.shell_hosts.get(host)
         shell = host.getCurrentShell()
         if dock is None or shell is None:
             return
-        pane_id = self._peerBackend._pane_id_from_dock(dock)
-        if pane_id not in self._peerWorkspace.panes:
+        pane_id = runtime.backend._pane_id_from_dock(dock)
+        if pane_id not in runtime.model.panes:
             return
-        if pane_id in self._peerShellLifecycles.pane_ids:
-            return
-        lifecycle = _PyzoShellLifecycle(self, pane_id, shell)
-        policy = self._peerShellLifecycles.register_shell(pane_id, lifecycle)
-        result = self._peerWorkspace.set_close_policy(pane_id, policy)
-        if not result.applied:
-            self._peerShellLifecycles.forget_shell(pane_id)
-            raise RuntimeError(result.detail)
+        if pane_id not in self._peerShellLifecycles.pane_ids:
+            lifecycle = _PyzoShellLifecycle(self, pane_id, shell)
+            policy = self._peerShellLifecycles.register_shell(pane_id, lifecycle)
+            result = runtime.model.set_close_policy(pane_id, policy)
+            if not result.applied:
+                self._peerShellLifecycles.forget_shell(pane_id)
+                raise RuntimeError(result.detail)
+        execution = getattr(self, "_peerSelectionExecution", None)
+        if execution is not None and runtime.identity in self._peerWorkspaces.workspace_ids:
+            execution.attach_shell(shell, runtime.identity, pane_id)
 
     def _requestPeerShellClose(self, shell):
         host = next(
             (host for host in pyzo.shells.hosts if shell in host.getShells()),
             None,
         )
-        dock = self._shellHosts.get(host)
+        runtime = self._peerRuntimeForShellHost(host)
+        dock = runtime.shell_hosts.get(host)
         if dock is None:
             return 0
-        pane_id = self._peerBackend._pane_id_from_dock(dock)
-        result = self._peerWorkspace.request_close_pane(
+        pane_id = runtime.backend._pane_id_from_dock(dock)
+        result = runtime.model.request_close_pane(
             pane_id, self._resolvePeerShellClose
         )
         return 1 if result.applied else 0
@@ -3958,7 +3992,8 @@ class MainWindow(_ApplicationHostBase):
             QtWidgets.qApp.exit(code)
 
     def _closeCommittedPeerShell(self, pane_id, shell, *, terminate):
-        assert pane_id not in self._peerWorkspace.panes
+        assert self._peerWorkspaces.pane_owner(pane_id) is None
+        self._peerSelectionExecution.detach_shell(shell)
         result = shell.closeShellCommitted(terminate_kernel=terminate)
         if not result:
             raise RuntimeError("committed shell close did not complete")
@@ -3967,8 +4002,13 @@ class MainWindow(_ApplicationHostBase):
         from pyzo.core.shellStack import shellTitle
 
         shell = host.getCurrentShell()
-        dock = self._shellHosts.get(host)
+        runtime = self._peerRuntimeForShellHost(host)
+        hosts = runtime.shell_hosts if runtime is not None else self._shellHosts
+        dock = hosts.get(host)
         if shell is not None and dock is not None:
+            execution = getattr(self, "_peerSelectionExecution", None)
+            if execution is not None:
+                execution.sync_shell(shell)
             title = shellTitle(shell)
             debug_state = shell._debugState or {}
             if self._peerFrameMode:

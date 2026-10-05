@@ -103,6 +103,11 @@ class RunCommandService(QtCore.QObject):
         self._commandHistory = command_history
         self._translate = translate
         self._dialogParent = dialog_parent
+        self._selectionExecution = None
+
+    def set_selection_execution(self, service):
+        """Install the peer Selection route independently of File/Main Run."""
+        self._selectionExecution = service
 
     def get_shell_and_editor(self, what, main_editor=False, given_editor=None):
         message = ""
@@ -138,9 +143,20 @@ class RunCommandService(QtCore.QObject):
         self.run_selected(run_current_line_and_print_result=True)
 
     def run_selected(self, advance=False, run_current_line_and_print_result=False):
-        shell, editor = self.get_shell_and_editor("selection")
-        if not shell or not editor:
-            return
+        execution = self._selectionExecution
+        if execution is None:
+            shell, editor = self.get_shell_and_editor("selection")
+            if not shell or not editor:
+                return
+            provenance = None
+        else:
+            editor = self._editors.getCurrentEditor()
+            resolved = execution.resolve_selection(
+                editor, line=run_current_line_and_print_result
+            )
+            if not resolved.resolved:
+                return
+            provenance = resolved.provenance
 
         screen_cursor = editor.textCursor()
         run_cursor = editor.textCursor()
@@ -173,20 +189,32 @@ class RunCommandService(QtCore.QObject):
                         if left_result is not None:
                             selected_text += "; " + left_result
             code = selected_text.replace("\u2029", "\n").strip()
-            self._commandHistory.append(code)
-            shell.executeCommand(code + "\n")
+
+            def send(shell):
+                self._commandHistory.append(code)
+                shell.executeCommand(code + "\n")
         else:
             code = run_cursor.selectedText().replace("\u2029", "\n")
             self._show_what_to_execute(editor, run_cursor)
-            shell.executeCode(code, editor.id(), first_line)
+            filename = editor.id()
+
+            def send(shell):
+                shell.executeCode(code, filename, first_line)
+
+        if execution is None:
+            send(shell)
+        elif not execution.dispatch(provenance, send):
+            return
 
         if advance:
-            self._advance(run_cursor)
+            self._advance(run_cursor, editor=editor)
+        return provenance
 
-    def _advance(self, run_cursor):
-        shell, editor = self.get_shell_and_editor("selection")
-        if not shell or not editor:
-            return
+    def _advance(self, run_cursor, editor=None):
+        if editor is None:
+            shell, editor = self.get_shell_and_editor("selection")
+            if not shell or not editor:
+                return
         cursor = editor.textCursor()
         cursor.setPosition(run_cursor.position())
         cursor.movePosition(cursor.MoveOperation.NextBlock)
@@ -258,9 +286,7 @@ class RunCommandService(QtCore.QObject):
         description = "main file" if main_file else "file"
         if as_script:
             description += self._translate("menu", " (as script)")
-        shell, editor = self.get_shell_and_editor(
-            description, main_file, given_editor
-        )
+        shell, editor = self.get_shell_and_editor(description, main_file, given_editor)
         if not shell or not editor:
             return
         if as_script:

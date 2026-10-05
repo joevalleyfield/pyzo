@@ -141,6 +141,10 @@ class DocumentCollectionAccess:
     def view_identity(self, editor):
         return getattr(editor, "_peerViewIdentity", None)
 
+    def is_bound(self, editor):
+        """Whether this is a live native view admitted by the document adapter."""
+        return editor in self._editors
+
     def resource(self, editor):
         identity = self.identity(editor)
         return None if identity is None else self._registry.resource(identity)
