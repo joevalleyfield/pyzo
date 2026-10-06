@@ -1274,7 +1274,11 @@ class ShellMenu(Menu):
             return
         from pyzo.core.shellStack import shellTitle
 
-        shell = pyzo.shells.getExecutionShell()
+        shell = (
+            pyzo.shells.getCurrentShell()
+            if getattr(pyzo.application, "workspace_debugging", None)
+            else pyzo.shells.getExecutionShell()
+        )
         target = shellTitle(shell) if shell is not None else "None"
         prefix = (
             "Debugger target: "
@@ -1304,6 +1308,8 @@ class ShellMenu(Menu):
             self, "shell.debug.start"
         )
         self._shellDebugActions = self.buildShellDebugActions()
+        self._brokenBreakpointMenu = QtWidgets.QMenu("Unavailable breakpoint sources", self)
+        QtWidgets.QMenu.addMenu(self, self._brokenBreakpointMenu)
         #
         self.aboutToShow.connect(self._updateDebugButtons)
 
@@ -1342,6 +1348,29 @@ class ShellMenu(Menu):
         bpcount = 0
         for e in pyzo.editors:
             bpcount += len(e.breakPoints())
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
+        self._brokenBreakpointMenu.clear()
+        if debugging is not None:
+            owner = pyzo.application.workspaces.active_identity
+            sources = debugging.overlays.sources(owner)
+            bpcount = sum(
+                enabled for source in sources for _line, enabled in source.entries
+            )
+            for source in sources:
+                if not source.active:
+                    action = self._brokenBreakpointMenu.addAction(
+                        f"Discard {len(source.entries)} inactive breakpoints: {source.path or source.document_id}"
+                    )
+                    action.triggered.connect(
+                        lambda _checked=False, owner=owner, identity=source.document_id: (
+                            debugging.discard_broken(owner, identity)
+                        )
+                    )
+        self._brokenBreakpointMenu.menuAction().setVisible(
+            bool(self._brokenBreakpointMenu.actions())
+        )
         self._debug_clear.setText(self._debug_clear_text.format(bpcount))
         pyzo.shellCommandProjector.refresh()
 

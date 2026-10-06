@@ -3,6 +3,8 @@ import sys
 import time
 import bdb
 import traceback
+import uuid
+from copy import deepcopy
 
 
 # Patch bdb so that "stop debugging" stops code execution even when using
@@ -28,6 +30,9 @@ class Debugger(bdb.Bdb):
             self._original_breakpointhook = sys.breakpointhook
             sys.breakpointhook = self.custom_breakpointhook
         self._last_db_command = None
+        self._session_id = None
+        self._session_origin = None
+        self._sequence = 0
 
     def custom_breakpointhook(self, *args, **kwargs):
         """handle "breakpoint()" commands
@@ -183,6 +188,16 @@ class Debugger(bdb.Bdb):
         # Don't stop except at breakpoints or when finished
         self._set_stopinfo(self.botframe, None, -1)
         self._last_db_command = None
+        self._begin_workspace_session()
+
+    def _begin_workspace_session(self, origin=None):
+        interpreter = sys._pyzoInterpreter
+        self._session_id = uuid.uuid4().hex
+        self._session_origin = deepcopy(
+            origin
+            if origin is not None
+            else getattr(interpreter, "_activeWorkspaceReceipt", None)
+        )
 
     def message(self, msg):
         """Alias for interpreter.write(), but appends a newline.
@@ -220,7 +235,11 @@ class Debugger(bdb.Bdb):
             "index": interpreter._dbFrameIndex,
             "frames": frames,
             "debugmode": self._debugmode,
+            "session_id": self._session_id,
+            "origin": self._session_origin,
+            "sequence": self._sequence + 1,
         }
+        self._sequence += 1
         if getattr(interpreter, "startup_info", {}).get("nativeTransportEpoch"):
             state = interpreter.workspace_message(state=state)
         interpreter.context._stat_debug.send(state)
@@ -509,6 +528,9 @@ class Debugger(bdb.Bdb):
         if self._debugmode:
             self.message("Already in debug mode.")
         elif tb:
+            self._begin_workspace_session(
+                getattr(sys._pyzoInterpreter, "_lastTracebackReceipt", None)
+            )
             self.interaction(None, tb, pm=True, pm_exc=exc)
         else:
             self.message("No debug information available.")

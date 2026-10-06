@@ -46,10 +46,16 @@ class NativeRequest:
     source_token: object = None
     cursor: object = None
     guard: object = None
+    debug_context: object = None
 
     def current(self, *, latest=True):
         if not self.service.provenance_is_current(self.provenance):
             return False
+        if self.debug_context is not None:
+            from .workspaceDebugging import debug_token
+
+            if debug_token(self.shell) != self.debug_context:
+                return False
         if not getattr(self.consumer, "_nativeRequestAlive", True):
             return False
         if latest and getattr(self.consumer, self.slot, None) is not self:
@@ -110,6 +116,9 @@ def capture(shell, command, consumer, *, source=None, guard=None, slot_suffix=""
         cursor,
         guard,
     )
+    from .workspaceDebugging import debug_token
+
+    ticket.debug_context = debug_token(shell)
     if not hasattr(consumer, "_nativeRequestAlive"):
         consumer._nativeRequestAlive = True
         destroyed = getattr(consumer, "destroyed", None)
@@ -197,6 +206,12 @@ def request(
         shell = ticket.shell
         epoch = shell._nativeTransportEpoch
         receipt = wire_receipt(ticket.provenance)
+        if ticket.debug_context is not None:
+            _epoch, session_id, sequence, mode = ticket.debug_context
+            receipt["debug_context"] = {
+                "mode": mode, "session_id": session_id if mode else None,
+                "sequence": sequence if mode else None,
+            }
         future = shell._request.requestWithProvenance(receipt, epoch, method, args)
     else:
         future = getattr(shell._request, method)(*args)

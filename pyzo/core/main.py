@@ -1332,6 +1332,13 @@ class MainWindow(_ApplicationHostBase):
                 main_path_is_available=os.path.isfile,
             )
             pyzo.application.workspace_execution = self._peerSelectionExecution
+            from pyzo.core.workspaceDebugging import WorkspaceDebugging
+
+            pyzo.application.workspace_debugging = WorkspaceDebugging(
+                pyzo.application.documents, self._peerSelectionExecution, pyzo.editors,
+                lambda: self._peerRetentionCoordinator.edit(),
+                self._openPeerDebugSource, self._peerStatusService.showMessage,
+            )
             pyzo.runCommands.set_selection_execution(self._peerSelectionExecution)
             pyzo.runCommands.set_main_services(
                 self._peerMainEditor, self._peerMainChanged
@@ -1602,7 +1609,10 @@ class MainWindow(_ApplicationHostBase):
     def _restorePeerWorkspaceSession(self):
         if self._peerPersistedEmptyWorkspaceSet:
             return
-        if not self._peerWorkspaces.workspace_ids and self._peerWorkspaceRestoreFailures:
+        if (
+            not self._peerWorkspaces.workspace_ids
+            and self._peerWorkspaceRestoreFailures
+        ):
             # Keep an unavailable loaded set retryable without fabricating
             # editor views in the temporary bootstrap runtime.
             return
@@ -1618,6 +1628,25 @@ class MainWindow(_ApplicationHostBase):
         if not snapshot:
             snapshot = pyzo.config.state.get("peerWorkspaceSession", None)
         if snapshot:
+            if isinstance(snapshot.get("editor_views"), dict):
+                # Editor restoration already translated fresh native pane IDs.
+                # Apply session metadata to that topology, not the old IDs.
+                snapshot = deepcopy(snapshot)
+                current = self._peerWorkspace.serialize_layout()
+                frame_ids = dict(
+                    zip(
+                        (frame["id"] for frame in snapshot["layout"]["frames"]),
+                        (frame["id"] for frame in current["frames"]),
+                    )
+                )
+                snapshot["layout"] = current
+                snapshot["frame_geometries"] = {
+                    frame_ids[identity]: geometry
+                    for identity, geometry in snapshot.get(
+                        "frame_geometries", {}
+                    ).items()
+                    if identity in frame_ids
+                }
             result = pyzo.workspaceSession.restore(snapshot)
             if result.applied and self._peerWorkspace.frames:
                 return
@@ -2012,6 +2041,7 @@ class MainWindow(_ApplicationHostBase):
         self._savePeerWorkspacePersistence(
             preserve_workspace_ids=(str(identity),)
         )
+        self._peerRetentionCoordinator.edit()
         self._reconcilePeerChrome(self._peerRuntimeFrameWindows())
         return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
 
@@ -2046,6 +2076,7 @@ class MainWindow(_ApplicationHostBase):
                 self._editorHosts = self._peerRuntime.editor_hosts
                 self._shellHosts = self._peerRuntime.shell_hosts
             self._savePeerWorkspacePersistence()
+            self._peerRetentionCoordinator.edit()
         except Exception as error:
             if identity in self._peerWorkspaces.workspace_ids:
                 self._peerWorkspaces.remove_workspace(identity)
@@ -2093,16 +2124,17 @@ class MainWindow(_ApplicationHostBase):
             for issue in loaded.issues
         ):
             self._peerWorkspacePersistenceBlocked = True
-            raise RuntimeError(
-                "workspace process persistence is unavailable"
-            )
+            raise RuntimeError("workspace process persistence is unavailable")
         workspace_id = str(self._peerWorkspaceIdentity)
         workspaces = deepcopy(dict(loaded.state.workspaces))
         captured = self._peerWorkspaces.capture_persistence_records()
         captured_workspaces = captured["workspaces"]
         for captured_id, captured_record in captured_workspaces.items():
             previous = deepcopy(dict(workspaces.get(captured_id, {})))
+            previous_session = deepcopy(dict(previous.get("session", {})))
             previous.update(deepcopy(dict(captured_record)))
+            previous_session.update(deepcopy(dict(captured_record.get("session", {}))))
+            previous["session"] = previous_session
             previous["profile"] = deepcopy(
                 dict(workspaces.get(captured_id, {}).get("profile", {}))
             )
@@ -2112,9 +2144,7 @@ class MainWindow(_ApplicationHostBase):
             extensions = deepcopy(
                 dict(workspaces.get(captured_id, {}).get("extensions", {}))
             )
-            extensions.update(
-                deepcopy(dict(captured_record.get("extensions", {})))
-            )
+            extensions.update(deepcopy(dict(captured_record.get("extensions", {}))))
             if captured_id == workspace_id:
                 previous["session"] = pyzo.workspaceSession.capture()
                 extensions["pyzo_peer_initialized"] = True
@@ -2123,6 +2153,16 @@ class MainWindow(_ApplicationHostBase):
                     self._PeerIdentityKind.WORKSPACE, captured_id
                 )
             )
+            previous["session"]["frame_geometries"] = {
+                frame_id: [
+                    window.geometry().x(),
+                    window.geometry().y(),
+                    window.geometry().width(),
+                    window.geometry().height(),
+                ]
+                for frame_id, window in runtime.backend.frame_windows.items()
+            }
+            previous["session"].setdefault("loaded_tools", [])
             previous["session"]["editor_views"] = {
                 str(host._tabs.currentItem().editor._peerViewIdentity): (
                     runtime.backend._pane_id_from_dock(dock)
@@ -2136,7 +2176,8 @@ class MainWindow(_ApplicationHostBase):
         # Failed requested owners remain requested across checkpoint/restart.
         # They can be explicitly retried without losing their retained views.
         loaded_ids += tuple(
-            identity for identity in loaded.state.loaded_workspace_ids
+            identity
+            for identity in loaded.state.loaded_workspace_ids
             if identity in self._peerWorkspaceRestoreFailures
             and identity not in loaded_ids
         )
@@ -2227,20 +2268,16 @@ class MainWindow(_ApplicationHostBase):
         retained_views = {
             identity: deepcopy(value)
             for identity, value in dict(merged.get("retained_views", {})).items()
-            if not (
+            if identity not in current.get("views", {})
+            and not (
                 isinstance(value, dict)
                 and value.get("workspace_id") == workspace_id
                 and value.get("workspace_id") not in preserve_workspace_ids
             )
         }
-        retained_views.update(
-            deepcopy(dict(current.get("retained_views", {})))
-        )
-        # A view identity has one authoritative persisted location.  A close
-        # can contribute the same descriptor to both collections while the
-        # live resource snapshot still contains its pre-close entry.  Retained
-        # state is the durable representation after closure, so remove the
-        # duplicate live entry before handing the snapshot to the registry.
+        retained_views.update(deepcopy(dict(current.get("retained_views", {}))))
+        # Current membership supersedes historical membership in either
+        # direction: close retains a live view; resume reactivates it.
         views = {
             identity: value
             for identity, value in views.items()
@@ -2256,9 +2293,7 @@ class MainWindow(_ApplicationHostBase):
                 "retained_views": retained_views,
                 "mains": mains,
                 "extensions": deepcopy(
-                    current.get(
-                        "extensions", merged.get("extensions", {})
-                    )
+                    current.get("extensions", merged.get("extensions", {}))
                 ),
             }
         )
@@ -2379,6 +2414,8 @@ class MainWindow(_ApplicationHostBase):
                         execution = getattr(self, "_peerSelectionExecution", None)
                         if execution is not None:
                             execution.foreground_shell(host.getCurrentShell())
+                            if getattr(pyzo.application, "workspace_debugging", None):
+                                host.onShellDebugStateChange(host.getCurrentShell())
                         return
                 return
             return
@@ -2782,6 +2819,9 @@ class MainWindow(_ApplicationHostBase):
                 self._peerDocumentResources.forget_document(document_id)
             raise RuntimeError(result.detail)
         pyzo.application.documents.bind(item.editor)
+        debugging = getattr(pyzo.application, "workspace_debugging", None)
+        if debugging is not None:
+            debugging.bind(item.editor)
         if not item.filename and not item.editor.toPlainText():
             item.editor.document().setModified(False)
         # Editor construction may enqueue a legacy-id parse before the peer
@@ -2857,6 +2897,30 @@ class MainWindow(_ApplicationHostBase):
         for host in pyzo.editors.groups:
             host._tabs.updateItems()
         self._peerRetentionCoordinator.edit()
+
+    def _openPeerDebugSource(self, workspace_id, document_id, filename, line):
+        if document_id is not None:
+            editor = self._peerMainEditor(document_id, workspace_id)
+        else:
+            if not os.path.isfile(filename):
+                self._peerStatusService.showMessage("Debugger source is unavailable.")
+                return None
+            runtime = self._peerRuntimeCatalog.runtime(workspace_id)
+            self._peerEditorLifecycleMigration = True
+            try:
+                host = self._createEditorHostForRuntime(runtime)
+                pyzo.editors.addGroup(host)
+                item = host.loadFile(filename, ignoreFail=True)
+            finally:
+                self._peerEditorLifecycleMigration = False
+            if item is None:
+                return None
+            editor = item.editor
+            self._bindPeerEditorLifecycle(host)
+        host = pyzo.editors._group_for_editor(editor)
+        pyzo.editors.setActiveGroup(host)
+        editor.gotoLine(line)
+        return editor
 
     def _peerMainEditor(self, document_id, workspace_id, *, reopen=True):
         """Use the native saver; script execution may reopen a retained main view."""
@@ -3456,6 +3520,9 @@ class MainWindow(_ApplicationHostBase):
         execution = getattr(self, "_peerSelectionExecution", None)
         if execution is not None and runtime.identity in self._peerWorkspaces.workspace_ids:
             execution.attach_shell(shell, runtime.identity, pane_id)
+            debugging = getattr(pyzo.application, "workspace_debugging", None)
+            if debugging is not None:
+                debugging.send_breakpoints(shell)
 
     def _requestPeerShellClose(self, shell):
         host = next(
@@ -3485,8 +3552,14 @@ class MainWindow(_ApplicationHostBase):
         )
         if state is self._PeerShellState.DEBUGGING:
             detail = translate(
-                "shell", "The active debugging session and its stack state will be lost."
+                "shell",
+                "The live interpreter and captured debugging stack will be lost.",
             )
+            if (lifecycle._shell._debugState or {}).get("debugmode") == 1:
+                detail = translate(
+                    "shell",
+                    "Postmortem inspection, the live interpreter and captured stack will be lost.",
+                )
         elif state is self._PeerShellState.RUNNING:
             detail = translate("shell", "The interpreter is currently executing code.")
         elif state is self._PeerShellState.IDLE:

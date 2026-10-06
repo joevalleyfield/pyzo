@@ -435,9 +435,16 @@ class BaseShell(BaseTextCtrl):
             self.setTextCursor(cursor)
 
             # Try opening the file (at the line number if we have one)
-            result = pyzo.editors.loadFile(filename)
-            if result:
-                editor = result._editor
+            debugging = getattr(
+                getattr(pyzo, "application", None), "workspace_debugging", None
+            )
+            if debugging is not None:
+                editor = debugging.navigate(self, filename, linenr or 1)
+                result = None
+            else:
+                result = pyzo.editors.loadFile(filename)
+                editor = result._editor if result else None
+            if editor is not None:
                 if linenr is not None:
                     editor.gotoLine(linenr)
                     cursor = editor.textCursor()
@@ -1243,6 +1250,11 @@ class PythonShell(BaseShell):
         # Variables to store state, python version, builtins and keywords
         self._state = ""
         self._debugState = {}
+        self._workspaceDebugSequence = 0
+        self._workspaceBreakpointSnapshot = None
+        self._workspaceTracebackReceipt = None
+        self._workspaceSessionSources = {}
+        self._workspaceTracebackSources = {}
         self._version = ""
         self._builtins = []
         self._keywords = []
@@ -1689,12 +1701,23 @@ class PythonShell(BaseShell):
                 return True  # peer refusal must not fall through to untagged transport
             provenance = result.provenance
         receipt = self._rememberWorkspaceOperation(provenance)
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
+        fields = (
+            debugging.before_operation(self, receipt, kind, payload)
+            if debugging
+            else {}
+        )
+        if kind == "command" and payload.upper().startswith("DB START"):
+            fields["traceback_receipt"] = self._workspaceTracebackReceipt
         self._ctrl_operation.send(
             {
                 "kind": kind,
                 "payload": payload,
                 "receipt": receipt,
                 "epoch": self._nativeTransportEpoch,
+                **fields,
             }
         )
         return True
@@ -1735,7 +1758,8 @@ class PythonShell(BaseShell):
     def _consumeWorkspaceResult(self, message):
         if (
             not isinstance(message, dict)
-            or message.get("phase") not in ("accepted", "complete", "startup")
+            or message.get("phase")
+            not in ("accepted", "complete", "startup", "traceback")
             or not isinstance(message.get("receipt"), dict)
             or not self._acceptWorkspaceMessage(message)
         ):
@@ -1754,11 +1778,22 @@ class PythonShell(BaseShell):
                 ),
             )
         self._workspaceResults.append(message)
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
+        if debugging is not None:
+            debugging.finished(self, message)
         del self._workspaceResults[:-128]
         return True
 
     def sendBreakPoints(self, breaks):
         """Send all breakpoints."""
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
+        if debugging is not None:
+            debugging.send_breakpoints(self)
+            return
         # breaks is a dict of filenames to integers
         self._stat_breakpoints.send(breaks)
 
@@ -1842,8 +1877,14 @@ class PythonShell(BaseShell):
                 except ValueError:
                     linenr = None
                 fname = " ".join(parts)
-                editor = pyzo.editors.loadFile(fname)
-                if editor and linenr:
+                debugging = getattr(
+                    getattr(pyzo, "application", None), "workspace_debugging", None
+                )
+                if debugging is not None:
+                    editor = debugging.navigate(self, fname, linenr or 1)
+                else:
+                    editor = pyzo.editors.loadFile(fname)
+                if debugging is None and editor and linenr:
                     editor._editor.gotoLine(linenr)
             else:
                 print("Unknown action: {}".format(action))
@@ -1875,7 +1916,15 @@ class PythonShell(BaseShell):
         # Update debug status
         state = self._stat_debug.recv()
         if isinstance(state, dict) and "epoch" in state:
-            if not self._acceptWorkspaceMessage(state):
+            debugging = getattr(
+                getattr(pyzo, "application", None), "workspace_debugging", None
+            )
+            accepted = (
+                debugging.accept_debug(self, state)
+                if debugging
+                else self._acceptWorkspaceMessage(state)
+            )
+            if not accepted:
                 return
             state = state["state"]
         if state != self._debugState:

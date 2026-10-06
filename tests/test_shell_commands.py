@@ -105,3 +105,29 @@ def test_shell_commands_own_targeting_invocation_and_debug_state():
 
     assert service.invoke("shell.debug.clear_breakpoints")
     assert editor.cleared
+
+
+def test_peer_debugger_controls_follow_foreground_and_reject_postmortem_step(
+    monkeypatch,
+):
+    import pyzo
+
+    service, shells, assigned, _editor = make_service()
+    foreground = Shell()
+    foreground._debugState = dict(debugmode=1)
+    assigned._debugState = dict(debugmode=2)
+    shells.getCurrentShell = lambda: foreground
+    monkeypatch.setattr(
+        pyzo, "application", SimpleNamespace(workspace_debugging=True), raising=False
+    )
+    for name in ("next", "step", "return", "jump", "continue"):
+        assert not service.invoke("shell.debug.control." + name)
+    assert service.invoke("shell.debug.control.stop")
+    assert foreground.calls == ["DB STOP\n"] and assigned.calls == []
+    foreground._debugState = dict(debugmode=2)
+    assert service.invoke("shell.debug.control.next")
+    assert foreground.calls[-1] == "DB NEXT\n" and assigned.calls == []
+    foreground._debugState = dict(debugmode=0)
+    assert not service.invoke("shell.debug.control.next")
+    shells.getCurrentShell = lambda: None
+    assert not service.invoke("shell.debug.control.next")

@@ -313,6 +313,7 @@ class DocumentCollectionAccess:
         editor._peerRetentionBreak = False
         if document_id not in self._pending:
             self._pending[document_id] = (view_id, resource.text)
+        self._registry.rebase_breakpoints(document_id, editor.toPlainText())
         resource.text = editor.toPlainText()
         resource.revision += 1
         editor._peerRetentionPreviousChange = change
@@ -334,6 +335,11 @@ class DocumentCollectionAccess:
 
     def _project(self, document_id, source=None):
         from pyzo.qt import QtCore
+        import pyzo
+
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
 
         resource = self._registry.resource(document_id)
         text = resource.text
@@ -342,16 +348,22 @@ class DocumentCollectionAccess:
                 continue
             cursor = editor.textCursor()
             position, anchor = cursor.position(), cursor.anchor()
-            with QtCore.QSignalBlocker(editor), QtCore.QSignalBlocker(editor.document()):
+            with (
+                QtCore.QSignalBlocker(editor),
+                QtCore.QSignalBlocker(editor.document()),
+            ):
+                if debugging is not None:
+                    for line, _enabled in tuple(editor.breakPoints(triState=True)):
+                        editor.toggleBreakpoint(line, triState=False)
                 editor.setUndoRedoEnabled(False)
                 editor.setPlainText(text)
                 editor.document().setModified(resource.is_dirty())
+            if debugging is not None:
+                debugging.project_editor(editor)
             cursor = editor.textCursor()
             maximum = max(0, editor.document().characterCount() - 1)
             cursor.setPosition(min(anchor, maximum))
-            cursor.setPosition(
-                min(position, maximum), cursor.MoveMode.KeepAnchor
-            )
+            cursor.setPosition(min(position, maximum), cursor.MoveMode.KeepAnchor)
             editor.setTextCursor(cursor)
 
     def flush(self, editor):

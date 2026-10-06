@@ -190,10 +190,10 @@ class ShellStackWidget(QtWidgets.QWidget):
         if shell and shell._debugState:
             info = shell._debugState
             self._debugmode = info["debugmode"]
-            self._dbs.setTrace(shell._debugState)
+            self._dbs.setTrace(shell._debugState, shell)
         else:
             self._debugmode = 0
-            self._dbs.setTrace(None)
+            self._dbs.setTrace(None, shell)
         if shell is pyzo.shells.getCurrentShell():
             pyzo.metadata.shell(shell)
             # Send signal
@@ -496,9 +496,25 @@ class DebugStack(QtWidgets.QToolButton):
         # Bind to triggers
         self.triggered.connect(self.onTriggered)
 
+    def _contextShell(self, action=None):
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
+        if debugging is None:
+            return pyzo.shells.getCurrentShell()
+        shell = getattr(self, "_sessionShell", None)
+        token = getattr(action, "_debugContext", getattr(self, "_sessionToken", None))
+        if (
+            shell is None
+            or shell is not pyzo.shells.getCurrentShell()
+            or not debugging.context_current(shell, token)
+        ):
+            return None
+        return shell
+
     def onTriggered(self, action):
         # Get shell
-        shell = pyzo.shells.getCurrentShell()
+        shell = self._contextShell(action)
         if not shell:
             return
 
@@ -524,11 +540,12 @@ class DebugStack(QtWidgets.QToolButton):
                 f += deltaFrame
                 file = self._lastFrames[f - 1][0]
                 if not file.startswith("<frozen "):
-                    shell = pyzo.shells.getCurrentShell()
-                    shell.executeCommand("DB FRAME {}\n".format(f))
+                    shell = self._contextShell()
+                    if shell is not None:
+                        shell.executeCommand("DB FRAME {}\n".format(f))
                     break
 
-    def setTrace(self, info):
+    def setTrace(self, info, shell=None):
         """Set the stack trace.
 
         This method is called from the shell that receives the trace via its
@@ -536,6 +553,13 @@ class DebugStack(QtWidgets.QToolButton):
         If trace is None, removes the trace
         """
 
+        debugging = getattr(
+            getattr(pyzo, "application", None), "workspace_debugging", None
+        )
+        self._sessionShell = shell or getattr(self, "_sessionShell", None)
+        from .workspaceDebugging import debug_token
+
+        self._sessionToken = debug_token(self._sessionShell)
         # Get info
         if info:
             index, frames, debugmode = info["index"], info["frames"], info["debugmode"]
@@ -550,7 +574,10 @@ class DebugStack(QtWidgets.QToolButton):
             self.setMenu(None)
             self.setText("")  # (self._baseText)
             self.setEnabled(False)
-            pyzo.editors.setDebugLineIndicators(None)
+            if debugging is not None and self._sessionShell is not None:
+                debugging.indicators(self._sessionShell, ())
+            elif debugging is None:
+                pyzo.editors.setDebugLineIndicators(None)
 
         else:
             # Get the current frame
@@ -569,6 +596,7 @@ class DebugStack(QtWidgets.QToolButton):
                 action = menu.addAction(text)
                 action._index = thisIndex
                 action._isCurrent = False
+                action._debugContext = self._sessionToken
                 if thisIndex == index:
                     action._isCurrent = True
                     theAction = action
@@ -583,7 +611,10 @@ class DebugStack(QtWidgets.QToolButton):
                 if thisIndex == index:
                     break
             # Set debug indicators
-            pyzo.editors.setDebugLineIndicators(*debugIndicators)
+            if debugging is not None:
+                debugging.indicators(self._sessionShell, debugIndicators)
+            else:
+                pyzo.editors.setDebugLineIndicators(*debugIndicators)
 
             # Highlight current item and set the button text
             if theAction:
@@ -617,11 +648,23 @@ class DebugStack(QtWidgets.QToolButton):
                 error = "Stack frame is IPython input."
             else:
                 # Go there!
-                fileItem = pyzo.editors.loadFile(filename)
-                if not fileItem:
+                debugging = getattr(
+                    getattr(pyzo, "application", None), "workspace_debugging", None
+                )
+                if debugging is not None:
+                    shell = self._contextShell()
+                    if shell is None:
+                        return
+                    editor = debugging.navigate(
+                        shell, filename, linenr, self._sessionToken
+                    )
+                    fileItem = None
+                else:
+                    fileItem = pyzo.editors.loadFile(filename)
+                    editor = fileItem._editor if fileItem else None
+                if editor is None:
                     error = "Could not open file where the error occured."
         if error is None:
-            editor = fileItem._editor
             # Goto line and select it
             editor.gotoLine(linenr)
             cursor = editor.textCursor()

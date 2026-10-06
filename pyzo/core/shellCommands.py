@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import pyzo
 
 from pyzo.qt import QtCore, QtGui
 
@@ -50,15 +51,33 @@ class ShellCommandService(QtCore.QObject):
     def descriptor(self, command_id):
         return self._descriptors[command_id]
 
+    def _debug_target(self, shell=None):
+        if getattr(getattr(pyzo, "application", None), "workspace_debugging", None):
+            return shell or self._shells.getCurrentShell()
+        return self._shells.getExecutionShell()
+
     def is_enabled(self, command_id, shell=None):
         descriptor = self.descriptor(command_id)
         if descriptor.target == "current":
             return shell is not None
         if descriptor.target == "execution":
-            target = self._shells.getExecutionShell()
+            target = self._debug_target(shell)
             if target is None:
                 return False
             debugmode = self._shells._debugmode
+            debugging = getattr(
+                getattr(pyzo, "application", None), "workspace_debugging", None
+            )
+            if debugging:
+                execution = getattr(debugging, "execution", None)
+                if execution is not None:
+                    from spikes.peer_frames.execution_routing import ExecutionCommand
+
+                    if not execution.resolve_shell(
+                        target, ExecutionCommand.DEBUGGER
+                    ).resolved:
+                        return False
+                debugmode = (target._debugState or {}).get("debugmode", 0)
             if descriptor.operation == "STOP":
                 return debugmode > 0
             if descriptor.operation == "START":
@@ -74,14 +93,32 @@ class ShellCommandService(QtCore.QObject):
             getattr(shell, descriptor.operation)()
             return True
         if descriptor.target == "breakpoints":
+            debugging = getattr(
+                getattr(pyzo, "application", None), "workspace_debugging", None
+            )
+            if debugging is not None:
+                debugging.clear(pyzo.application.workspaces.active_identity)
+                return True
             for editor in self._editors:
                 editor.clearBreakPoints()
             return True
 
-        target = self._shells.getExecutionShell()
+        target = self._debug_target(shell)
         command = descriptor.operation
         if command == "JUMP":
             editor = self._editors.getCurrentEditor()
+            debugging = getattr(
+                getattr(pyzo, "application", None), "workspace_debugging", None
+            )
+            if debugging is not None:
+                view = debugging.view(editor)
+                binding = debugging.execution._shells.get(target)
+                if (
+                    view is None
+                    or binding is None
+                    or view.workspace_id != binding.workspace_id
+                ):
+                    return False
             line_number = (
                 editor.textCursor().blockNumber() + 1 if editor is not None else -1
             )
@@ -235,9 +272,7 @@ class ShellCommandProjector(QtCore.QObject):
             action.setStatusTip(descriptor.text.tt)
             action.setToolTip(descriptor.text.tt)
         action.triggered.connect(
-            lambda checked=False: self._service.invoke(
-                command_id, shell_provider()
-            )
+            lambda checked=False: self._service.invoke(command_id, shell_provider())
         )
         toolbar.addAction(action)
         self._register(action, command_id, shell_provider)

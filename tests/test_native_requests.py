@@ -107,6 +107,7 @@ def test_wire_echo_and_immediate_callback_metadata_precedes_delivery(native):
         "shell_epoch",
         "kernel_generation_id",
         "process_workspace_id",
+        "debug_context",
     }
     assert receipt["workspace_id"] == receipt["process_workspace_id"] == str(w.a)
     assert receipt["view_id"] == str(w.editors[0]._peerViewIdentity)
@@ -132,10 +133,14 @@ def test_wire_echo_and_immediate_callback_metadata_precedes_delivery(native):
         "transport",
         "consumer",
         "superseded",
+        "debug-session",
+        "debug-frame",
+        "debug-exit",
     ],
 )
 def test_delayed_native_result_has_zero_consumer_writes_after_drift(native, mutation):
     w = native
+    w.shells[0]._debugState = dict(debugmode=2, session_id="session-a", sequence=1)
     f = issue(w)
     view = w.editors[0]._peerViewIdentity
     if mutation.startswith("view-"):
@@ -171,6 +176,12 @@ def test_delayed_native_result_has_zero_consumer_writes_after_drift(native, muta
         w.consumer._nativeRequestAlive = False
     elif mutation == "superseded":
         issue(w)
+    elif mutation == "debug-session":
+        w.shells[0]._debugState["session_id"] = "session-b"
+    elif mutation == "debug-frame":
+        w.shells[0]._debugState["sequence"] += 1
+    elif mutation == "debug-exit":
+        w.shells[0]._debugState["debugmode"] = 0
     f.deliver()
     assert w.values == []
 

@@ -90,6 +90,18 @@ class PyzoIntrospector(yoton.RepChannel):
     def requestWithProvenance(self, receipt, epoch, method, args):
         if epoch != sys._pyzoInterpreter.startup_info.get("nativeTransportEpoch"):
             raise ValueError("retired interpreter request")
+        context = receipt.get("debug_context")
+        if context is not None:
+            debugger = getattr(sys._pyzoInterpreter, "debugger", None)
+            mode = getattr(debugger, "_debugmode", 0)
+            if context.get("mode") != mode or (
+                mode
+                and (
+                    context.get("session_id") != debugger._session_id
+                    or context.get("sequence") != debugger._sequence
+                )
+            ):
+                raise ValueError("retired debugger frame request")
         if method not in (
             "signature",
             "signatureWithIntermediateResult",
@@ -101,7 +113,11 @@ class PyzoIntrospector(yoton.RepChannel):
             "evalMultiple",
         ):
             raise ValueError("unsupported native query")
-        return {"receipt": receipt, "epoch": epoch, "value": getattr(self, method)(*args)}
+        return {
+            "receipt": receipt,
+            "epoch": epoch,
+            "value": getattr(self, method)(*args),
+        }
 
     def _getNameSpace(self, name=""):
         """Get the namespace to apply introspection in.

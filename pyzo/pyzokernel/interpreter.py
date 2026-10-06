@@ -410,6 +410,9 @@ class PyzoInterpreter:
         def callHandlers_patched(self, record):
             if record.exc_info:
                 sys.last_type, sys.last_value, sys.last_traceback = record.exc_info
+                interpreter = sys._pyzoInterpreter
+                if not interpreter._dbFrames:
+                    interpreter._record_workspace_traceback()
             return callHandlers_ori(self, record)
 
         try:
@@ -730,6 +733,15 @@ class PyzoInterpreter:
             ):
                 return
             previous = getattr(self, "_activeWorkspaceReceipt", None)
+            session_id = message.get("debug_session_id")
+            if session_id is not None and (
+                session_id != self.debugger._session_id
+                or message.get("debug_sequence") != self.debugger._sequence
+                or not self.debugger._debugmode
+            ):
+                return
+            if "traceback_receipt" in message and message["traceback_receipt"] is not None and message["traceback_receipt"] != getattr(self, "_lastTracebackReceipt", None):
+                return
             self._activeWorkspaceReceipt = message["receipt"]
             try:
                 self.context._strm_result.send(self.workspace_message(phase="accepted"))
@@ -1117,6 +1129,10 @@ class PyzoInterpreter:
         including commands like "db continue".
         """
         try:
+            if self.debugger._debugmode == 1:
+                self.debugger.clear_all_breaks()
+                sys.settrace(None)
+                return
             breaks = self.context._stat_breakpoints.recv()
             self.debugger.clear_all_breaks()
             if breaks:  # Can be None
@@ -1251,6 +1267,7 @@ class PyzoInterpreter:
                     sys.last_type = etype
                     sys.last_value = value
                     sys.last_traceback = tb
+                    self._record_workspace_traceback()
 
             lines = traceback.format_exception(etype, value, tb)
 
@@ -1264,6 +1281,11 @@ class PyzoInterpreter:
             t = "An error occured, but then another one when trying to write the traceback: "
             t += str(value) + "\n"
             self.write(t)
+
+    def _record_workspace_traceback(self):
+        self._lastTracebackReceipt = getattr(self, "_activeWorkspaceReceipt", None)
+        if self.startup_info.get("nativeTransportEpoch"):
+            self.context._strm_result.send(self.workspace_message(phase="traceback"))
 
     def correctfilenameandlineno(self, fname, lineno):
         """Given a filename and lineno, this function returns
