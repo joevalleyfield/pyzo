@@ -850,7 +850,11 @@ class FileTabWidget(CompactTabWidget):
     def isMainItem(self, item):
         documents = getattr(getattr(pyzo, "application", None), "documents", None)
         if documents is not None and documents.is_bound(item.editor):
-            view = documents.registry.view(item.editor._peerViewIdentity)
+            try:
+                view = documents.registry.view(item.editor._peerViewIdentity)
+            except KeyError:
+                # Retirement precedes native dirty-state/tab notifications.
+                return False
             reference = documents.registry.main(view.workspace_id)
             return bool(reference and reference.document_id == view.document_id)
         return item.id == self._mainFile

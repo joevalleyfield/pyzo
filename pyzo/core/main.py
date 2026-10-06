@@ -1054,6 +1054,7 @@ class MainWindow(_ApplicationHostBase):
                         name=str(record.get("name", identity)),
                         persistence_location=record.get("persistence_location"),
                         state=record.get("profile", {}),
+                        restore=True,
                     )
                 except Exception:
                     self._peerRuntimeCatalog.dispose(runtime_identity)
@@ -1682,7 +1683,13 @@ class MainWindow(_ApplicationHostBase):
                         workspace_id, "workspace runtime is unavailable"
                     )
                     continue
-                if view_id in retained_ids:
+                live_view_id = self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.VIEW, view_id
+                )
+                if (
+                    view_id in retained_ids
+                    or live_view_id in self._peerDocumentResources.retained_view_ids
+                ):
                     self._peerDocumentResources.reopen_view(
                         self._PeerApplicationIdentity(
                             self._PeerIdentityKind.DOCUMENT, document_id
@@ -1710,7 +1717,10 @@ class MainWindow(_ApplicationHostBase):
                 editor._peerViewIdentity = self._PeerApplicationIdentity(
                     self._PeerIdentityKind.VIEW, view_id
                 )
-                editor.setPlainText(record.get("text", ""))
+                resource = self._peerDocumentResources.resource(
+                    editor._peerDocumentIdentity
+                )
+                editor.setPlainText(resource.text)
                 self._restorePeerEditorFileFormat(editor)
                 editor.document().setModified(
                     record.get("clean_text") != record.get("text")
@@ -1787,6 +1797,30 @@ class MainWindow(_ApplicationHostBase):
         if not isinstance(saved, dict) or not saved.get("frames"):
             return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
         workspace = self._peerWorkspaces.model(runtime.identity)
+        editor_views = session.get("editor_views")
+        if isinstance(editor_views, dict) and all(
+            pane.kind is self._PeerPaneKind.EDITOR for pane in workspace.panes.values()
+        ):
+            from spikes.peer_frames.workspace_session import retained_pane_layout
+
+            current_views = {
+                str(host._tabs.currentItem().editor._peerViewIdentity): (
+                    runtime.backend._pane_id_from_dock(dock)
+                )
+                for host, dock in runtime.editor_hosts.items()
+                if host._tabs.currentItem() is not None
+            }
+            pane_ids = {
+                pane_id: current_views[view_id]
+                for view_id, pane_id in editor_views.items()
+                if view_id in current_views
+            }
+            if set(pane_ids.values()) != set(workspace.panes):
+                return self._PeerOperationResult(
+                    self._PeerOperationStatus.INVALID,
+                    "retained editor layout mapping is incomplete",
+                )
+            return workspace.restore_layout(retained_pane_layout(saved, pane_ids))
         current = workspace.serialize_layout()
         saved_frames = saved.get("frames", [])
         current_frames = current.get("frames", [])
@@ -1916,6 +1950,7 @@ class MainWindow(_ApplicationHostBase):
                 self._savePeerWorkspacePersistence()
             except Exception as error:
                 runtime.model.discard_preflight()
+                self._peerShellLifecycles.cancel_pending(tuple(runtime.model.panes))
                 return self._PeerOperationResult(
                     self._PeerOperationStatus.INVALID,
                     "workspace persistence preflight failed: " + str(error),
@@ -2083,6 +2118,18 @@ class MainWindow(_ApplicationHostBase):
             if captured_id == workspace_id:
                 previous["session"] = pyzo.workspaceSession.capture()
                 extensions["pyzo_peer_initialized"] = True
+            runtime = self._peerRuntimeCatalog.runtime(
+                self._PeerApplicationIdentity(
+                    self._PeerIdentityKind.WORKSPACE, captured_id
+                )
+            )
+            previous["session"]["editor_views"] = {
+                str(host._tabs.currentItem().editor._peerViewIdentity): (
+                    runtime.backend._pane_id_from_dock(dock)
+                )
+                for host, dock in runtime.editor_hosts.items()
+                if host._tabs.currentItem() is not None
+            }
             previous["extensions"] = extensions
             workspaces[captured_id] = previous
         loaded_ids = tuple(captured["loaded_workspace_ids"])
