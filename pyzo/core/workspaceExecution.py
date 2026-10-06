@@ -25,6 +25,7 @@ class _ShellBinding:
     pane_id: str
     identity: object
     context: object
+    transport_epoch: object = None
 
 
 @dataclass(frozen=True)
@@ -132,13 +133,17 @@ class LiveWorkspaceExecution:
             self.router.reconnect_shell(
                 binding.identity, new_identity(IdentityKind.KERNEL_GENERATION)
             )
-        elif eligible and context is not binding.context:
+        elif eligible and (
+            context is not binding.context
+            or getattr(shell, "_nativeTransportEpoch", None) != binding.transport_epoch
+        ):
             self.router.recycle_shell(
                 binding.identity,
                 new_identity(IdentityKind.KERNEL_GENERATION),
                 succeeded=True,
             )
         binding.context = context
+        binding.transport_epoch = getattr(shell, "_nativeTransportEpoch", None)
         if eligible and self._foreground.get(binding.workspace_id) is shell:
             self.router.foreground_shell(binding.workspace_id, binding.identity)
 
@@ -424,7 +429,8 @@ class LiveWorkspaceExecution:
             and binding.workspace_id == provenance.workspace_id
             and binding.workspace_id == provenance.process_workspace_id
             and (
-                provenance.assignment_mode is AssignmentMode.EXPLICIT
+                provenance.assignment_mode
+                in (AssignmentMode.EXPLICIT, AssignmentMode.DIRECT)
                 or self._foreground.get(provenance.workspace_id) is binding.shell
             )
         )
@@ -435,8 +441,34 @@ class LiveWorkspaceExecution:
                 "the captured view or shell has changed; invoke the command again."
             )
             return False
-        send(self._binding_for_identity(provenance.shell_id).shell)
+        shell = self._binding_for_identity(provenance.shell_id).shell
+        previous = getattr(shell, "_workspaceOperation", None)
+        shell._workspaceOperation = provenance
+        try:
+            send(shell)
+        finally:
+            shell._workspaceOperation = previous
         return True
+
+    def resolve_shell(self, shell, command):
+        """Capture a direct native shell/tool/debugger operation without fallback."""
+        self._synchronize()
+        binding = self._shells.get(shell)
+        if binding is None or not self._owner_is_current(binding):
+            return self._refuse("the requested shell is unavailable.")
+        return self.router.resolve(
+            command, workspace_id=binding.workspace_id, shell_id=binding.identity
+        )
+
+    def request_source_is_current(self, editor, token):
+        self._synchronize()
+        view, _ = self._editor_view(editor)
+        return bool(view is not None and self._documents.token_is_current(token))
+
+    def request_source_token(self, editor):
+        self._synchronize()
+        view, _ = self._editor_view(editor)
+        return self._documents.view_token(view.identity) if view is not None else None
 
     def accept_result(self, provenance, value, consumer):
         if not self.provenance_is_current(provenance):

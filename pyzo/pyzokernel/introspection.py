@@ -87,6 +87,22 @@ for name in INTERNAL_OBJECT_NAMES:
 class PyzoIntrospector(yoton.RepChannel):
     """This is a RepChannel object to respond to requests from the IDE."""
 
+    def requestWithProvenance(self, receipt, epoch, method, args):
+        if epoch != sys._pyzoInterpreter.startup_info.get("nativeTransportEpoch"):
+            raise ValueError("retired interpreter request")
+        if method not in (
+            "signature",
+            "signatureWithIntermediateResult",
+            "dir",
+            "dir2",
+            "dirWithIntermediateResult",
+            "dir2WithIntermediateResult",
+            "doc",
+            "evalMultiple",
+        ):
+            raise ValueError("unsupported native query")
+        return {"receipt": receipt, "epoch": epoch, "value": getattr(self, method)(*args)}
+
     def _getNameSpace(self, name=""):
         """Get the namespace to apply introspection in.
 

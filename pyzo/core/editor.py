@@ -891,6 +891,21 @@ class PyzoEditor(BaseTextCtrl):
 
         # Send the open command to the shell
         s = pyzo.shells.getCurrentShell()
+        from .nativeRequests import execution_service
+
+        service = execution_service()
+        if service is not None:
+            from spikes.peer_frames.execution_routing import ExecutionCommand
+
+            result = service.resolve_editor(self, ExecutionCommand.HELP)
+            if not result.resolved:
+                return
+            if word and word.isidentifier():
+                service.dispatch(
+                    result.provenance,
+                    lambda shell: shell.executeCommand("open {}\n".format(word)),
+                )
+            return
         if s is not None:
             if word and word.isidentifier():
                 s.executeCommand("open {}\n".format(word))
@@ -901,6 +916,10 @@ class PyzoEditor(BaseTextCtrl):
 
     def processCallTip(self, cto):
         """Processes a calltip request using a CallTipObject instance."""
+        from .nativeRequests import prepare_introspection
+
+        if not prepare_introspection(cto):
+            return
         # Try using buffer first
         if cto.tryUsingBuffer():
             return
@@ -912,13 +931,18 @@ class PyzoEditor(BaseTextCtrl):
             cto.finish(sig)
         else:
             # Try the shell
-            shell = pyzo.shells.getCurrentShell()
+            ticket = getattr(cto, "_nativeTicket", None)
+            shell = ticket.shell if ticket else pyzo.shells.getCurrentShell()
             if shell:
                 shell.processCallTip(cto)
 
     def processAutoComp(self, aco):
         """Processes an autocomp request using an AutoCompObject instance."""
 
+        from .nativeRequests import prepare_introspection
+
+        if not prepare_introspection(aco):
+            return
         # Try using buffer first
         if aco.tryUsingBuffer():
             return
@@ -957,9 +981,7 @@ class PyzoEditor(BaseTextCtrl):
                     continue
                 if handleSelf or (className in fictiveNS):
                     # Only the self list (only first iter)
-                    fictiveClass = pyzo.parser.getFictiveClass(
-                        className, self, handleSelf
-                    )
+                    fictiveClass = pyzo.parser.getFictiveClass(className, self, handleSelf)
                     handleSelf = False
                     if fictiveClass:
                         aco.addNames(fictiveClass.members)
@@ -972,7 +994,8 @@ class PyzoEditor(BaseTextCtrl):
                     break
 
         # If there's a shell, let it finish the autocompletion
-        shell = pyzo.shells.getCurrentShell()
+        ticket = getattr(aco, "_nativeTicket", None)
+        shell = ticket.shell if ticket else pyzo.shells.getCurrentShell()
         if shell:
             shell.processAutoComp(aco)
         else:

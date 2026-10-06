@@ -1,6 +1,8 @@
+from pyzo.core.nativeRequests import tool_command
 import re
 
 import pyzo
+from pyzo.core.nativeRequests import request as native_request
 from pyzo.qt import QtCore, QtGui, QtWidgets
 
 tool_name = pyzo.translate("pyzoWorkspace", "Workspace")
@@ -47,8 +49,8 @@ class WorkspaceProxy(QtCore.QObject):
 
     haveNewData = QtCore.Signal()
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
         # Variables
         self._variables = []
@@ -75,8 +77,16 @@ class WorkspaceProxy(QtCore.QObject):
 
         shell = pyzo.shells.getCurrentShell()
         if shell:
-            future = shell._request.dir2(self._name)
-            future.add_done_callback(self._processResponse)
+            name = self._name
+            native_request(
+                shell,
+                "tool",
+                self,
+                "dir2",
+                [name],
+                self._processResponse,
+                guard=lambda: self._name == name and pyzo.shells.getCurrentShell() is shell,
+            )
 
     def goUp(self):
         """Cut the last part off the name."""
@@ -103,8 +113,16 @@ class WorkspaceProxy(QtCore.QObject):
         if not shell:
             self._variables = []
         elif shell._state not in ("Busy", "Very busy"):
-            future = shell._request.dir2(self._name)
-            future.add_done_callback(self._processResponse)
+            name = self._name
+            native_request(
+                shell,
+                "tool",
+                self,
+                "dir2",
+                [name],
+                self._processResponse,
+                guard=lambda: self._name == name and pyzo.shells.getCurrentShell() is shell,
+            )
 
     def _processResponse(self, future):
         """We got a response, update our list and notify the tree."""
@@ -171,7 +189,7 @@ class WorkspaceTree(QtWidgets.QTreeWidget):
         self.setRootIsDecorated(False)
 
         # Create proxy
-        self._proxy = WorkspaceProxy()
+        self._proxy = WorkspaceProxy(self)
         self._proxy.haveNewData.connect(self.fillWorkspace)
 
         # For menu
@@ -270,14 +288,14 @@ class WorkspaceTree(QtWidgets.QTreeWidget):
             shell = pyzo.shells.getCurrentShell()
             if shell is not None:
                 if cmd == "str":
-                    shell.executeCommand("print({})\n".format(objectName))
+                    tool_command(shell, "print({})\n".format(objectName))
                 else:
-                    shell.executeCommand("print(repr({}))\n".format(objectName))
+                    tool_command(shell, "print(repr({}))\n".format(objectName))
         elif cmd == "Delete":
             # Delete the variable
             shell = pyzo.shells.getCurrentShell()
             if shell is not None:
-                shell.processLine("del " + objectName)
+                tool_command(shell, "del " + objectName, line=True)
 
     def _addExpressionToViewer(self, expr, doRefresh=True):
         """add an expression to Expression viewer tool (if loaded)"""

@@ -83,13 +83,21 @@ class ShellCommandService(QtCore.QObject):
         if command == "JUMP":
             editor = self._editors.getCurrentEditor()
             line_number = (
-                editor.textCursor().blockNumber() + 1
-                if editor is not None
-                else -1
+                editor.textCursor().blockNumber() + 1 if editor is not None else -1
             )
             command = f"JUMP {line_number}"
-        target.executeCommand(f"DB {command}\n")
-        return True
+        from .nativeRequests import execution_service
+
+        service = execution_service()
+        if service is None:
+            target.executeCommand(f"DB {command}\n")
+            return True
+        from spikes.peer_frames.execution_routing import ExecutionCommand
+
+        result = service.resolve_shell(target, ExecutionCommand.DEBUGGER)
+        return result.resolved and service.dispatch(
+            result.provenance, lambda shell: shell.executeCommand(f"DB {command}\n")
+        )
 
     @staticmethod
     def _build_descriptors(icons, translate):

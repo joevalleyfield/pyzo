@@ -221,6 +221,8 @@ class Debugger(bdb.Bdb):
             "frames": frames,
             "debugmode": self._debugmode,
         }
+        if getattr(interpreter, "startup_info", {}).get("nativeTransportEpoch"):
+            state = interpreter.workspace_message(state=state)
         interpreter.context._stat_debug.send(state)
 
     ## Stuff that we need to overload

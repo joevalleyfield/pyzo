@@ -1,4 +1,6 @@
+from pyzo.core.nativeRequests import tool_command
 import pyzo
+from pyzo.core.nativeRequests import request as native_request
 from pyzo.qt import QtCore, QtGui, QtWidgets
 from pyzo import translate
 
@@ -16,8 +18,8 @@ class ExpressionProxy(QtCore.QObject):
 
     haveNewData = QtCore.Signal()
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
         self._expressions = []
         self._response = []
@@ -40,8 +42,19 @@ class ExpressionProxy(QtCore.QObject):
         """
         shell = pyzo.shells.getCurrentShell()
         if self._expressions and shell and shell._state not in ("Busy", "Very busy"):
-            future = shell._request.evalMultiple(self._expressions)
-            future.add_done_callback(self._processResponse)
+            expressions = list(self._expressions)
+            native_request(
+                shell,
+                "tool",
+                self,
+                "evalMultiple",
+                [expressions],
+                self._processResponse,
+                guard=lambda: (
+                    self._expressions == expressions
+                    and pyzo.shells.getCurrentShell() is shell
+                ),
+            )
 
     def _onCurrentShellChanged(self):
         """When no shell is selected now, update this. In all other cases,
@@ -189,7 +202,7 @@ class PyzoExpressionViewer(QtWidgets.QWidget):
         super().__init__(parent)
 
         # create proxy
-        self._proxy = ExpressionProxy()
+        self._proxy = ExpressionProxy(self)
         self._proxy.haveNewData.connect(self._processResults)
 
         # create expression manager
@@ -340,7 +353,7 @@ class PyzoExpressionViewer(QtWidgets.QWidget):
             shell = pyzo.shells.getCurrentShell()
             if shell is not None:
                 pyzo.command_history.append(expr)
-                shell.executeCommand(expr + "\n")
+                tool_command(shell, expr + "\n")
 
     def addExpression(self, expression):
         if self._inEditMode():

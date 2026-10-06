@@ -715,11 +715,28 @@ class PyzoInterpreter:
 
         # Get channel to take a message from
         ch = yoton.select_sub_channel(
-            self.context._ctrl_command, self.context._ctrl_code
+            self.context._ctrl_command,
+            self.context._ctrl_code,
+            self.context._ctrl_operation,
         )
 
         if ch is None:
             pass  # No messages waiting
+
+        elif ch is self.context._ctrl_operation:
+            message = ch.recv(False)
+            if not message or message.get("epoch") != self.startup_info.get(
+                "nativeTransportEpoch"
+            ):
+                return
+            previous = getattr(self, "_activeWorkspaceReceipt", None)
+            self._activeWorkspaceReceipt = message["receipt"]
+            try:
+                self.context._strm_result.send(self.workspace_message(phase="accepted"))
+                self._execute_workspace_operation(message["kind"], message["payload"])
+            finally:
+                self.context._strm_result.send(self.workspace_message(phase="complete"))
+                self._activeWorkspaceReceipt = previous
 
         elif ch is self.context._ctrl_command:
             # Read command
@@ -760,6 +777,37 @@ class PyzoInterpreter:
 
     ## Running code in various ways
     # In all cases there is a call for compilecode and a call to execcode
+
+    def workspace_message(self, **data):
+        data.update(
+            epoch=self.startup_info.get("nativeTransportEpoch"),
+            receipt=getattr(self, "_activeWorkspaceReceipt", None),
+        )
+        return data
+
+    def send_action(self, action):
+        if self.startup_info.get("nativeTransportEpoch"):
+            action = self.workspace_message(action=action)
+        self.context._strm_action.send(action)
+
+    def _execute_workspace_operation(self, kind, payload):
+        self.context._stat_interpreter.send("Busy")
+        self.newPrompt = True
+        if kind == "code":
+            self.runlargecode(payload)
+            self._resetbuffer()
+            self.more = False
+        elif kind == "command":
+            self.context._strm_echo.send(payload)
+            converted = self.magician.convert_command(payload.rstrip("\n"))
+            if converted is not None:
+                for line in converted.split("\n"):
+                    self.more = self.pushline(line)
+            else:
+                self.more = False
+                self._resetbuffer()
+        else:
+            raise ValueError("unsupported workspace operation")
 
     def _resetbuffer(self):
         """Reset the input buffer."""
@@ -1098,7 +1146,7 @@ class PyzoInterpreter:
         else:
             action = "open %s" % os.path.abspath(filename)
         # Send
-        self.context._strm_action.send(action)
+        self.send_action(action)
 
     def ipython_ask_exit(self):
         # Ask the user

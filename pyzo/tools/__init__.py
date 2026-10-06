@@ -328,6 +328,9 @@ class ToolManager(QtCore.QObject):
         # Close old one
         if toolId in self._activeTools:
             old = self._activeTools[toolId].widget()
+            from pyzo.core.nativeRequests import retire_consumer
+
+            retire_consumer(old)
             dock = self._activeTools[toolId]
             dock.setWidget(QtWidgets.QWidget(self._workspace.widget_parent(dock)))
             if old:
@@ -388,6 +391,11 @@ class ToolManager(QtCore.QObject):
             return None
 
     def onToolClose(self, toolId):
+        from pyzo.core.nativeRequests import retire_consumer
+
+        dock = self._activeTools.get(toolId)
+        if dock is not None:
+            retire_consumer(dock.widget())
         # Remove from dict
         self._activeTools.pop(toolId, None)
         # Set instance to None

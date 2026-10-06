@@ -1,3 +1,4 @@
+from pyzo.core.nativeRequests import tool_command
 import sys
 import re
 import html
@@ -5,6 +6,7 @@ from functools import partial
 
 from pyzo.qt import QtCore, QtGui, QtWidgets
 import pyzo
+from pyzo.core.nativeRequests import request, execution_service
 
 tool_name = pyzo.translate("pyzoInteractiveHelp", "Interactive help")
 tool_summary = pyzo.translate(
@@ -551,28 +553,32 @@ class PyzoInteractiveHelp(QtWidgets.QWidget):
             ).format(size, text)
         )
 
-    def setObjectName(self, name, addToHist=False):
+    def setObjectName(self, name, addToHist=False, requestSource=None):
         """Set the object name programatically
         and query documentation for it.
         """
         self._text.setText(name)
-        self.queryDoc(addToHist)
+        self.queryDoc(addToHist, requestSource=requestSource)
 
-    def helpFromExtension(self, requestedName, source, addToHist=False):
+    def helpFromExtension(self, requestedName, source, addToHist=False, requestSource=None):
         assert source in self._extensionLookups
         self._extensionLookups[source] = requestedName
+        if not hasattr(self, "_extensionSources"):
+            self._extensionSources = {}
+        self._extensionSources[source] = requestSource
 
         if self._pauseBut.isChecked():
             return
 
-        for s in self._extensionLookups.values():
+        for key, s in self._extensionLookups.items():
             if s is not None:
                 name = s
+                requestSource = self._extensionSources.get(key)
                 break
         else:
             name = self.currentHist()
             addToHist = False
-        self.setObjectName(name, addToHist)
+        self.setObjectName(name, addToHist, requestSource=requestSource)
 
     def _escapeHtml(self, text):
         return html.escape(text).replace("\n", "<br />")
@@ -632,22 +638,23 @@ class PyzoInteractiveHelp(QtWidgets.QWidget):
         # Tell shell to print doc
         shell = pyzo.shells.getCurrentShell()
         if shell and name:
+            send_line = lambda text: tool_command(shell, text, line=True)
             if name in operators:
-                shell.processLine(
+                send_line(
                     'print("""{}""")'.format(
                         "Help on operator: " + name + "\n\n" + operatorsHelp
                     )
                 )
             elif name in keywordsHelp:
-                shell.processLine(
+                send_line(
                     'print("""{}""")'.format(
                         "Help on keyword: " + name + "\n\n" + keywordsHelp[name]
                     )
                 )
             else:
-                shell.processLine("print({}.__doc__)".format(name))
+                send_line("print({}.__doc__)".format(name))
 
-    def queryDoc(self, addToHistory=True):
+    def queryDoc(self, addToHistory=True, requestSource=None):
         """Query the doc for the text in the line edit."""
         # Get name
         name = self._text.text()
@@ -662,9 +669,31 @@ class PyzoInteractiveHelp(QtWidgets.QWidget):
         else:
             # Get shell and ask for the documentation
             shell = pyzo.shells.getCurrentShell()
-            if shell and name:
-                future = shell._request.doc(name)
-                future.add_done_callback(self.queryDoc_response)
+            if (shell or requestSource is not None) and name:
+                service = execution_service()
+                source = requestSource
+                if (
+                    source is not None
+                    and service is not None
+                    and any(source is candidate for candidate in service._shells)
+                ):
+                    shell, source = source, None
+                request(
+                    shell,
+                    "help",
+                    self,
+                    "doc",
+                    [name],
+                    self.queryDoc_response,
+                    source=source,
+                    guard=lambda: (
+                        self._text.text() == name
+                        and (
+                            requestSource is not None
+                            or pyzo.shells.getCurrentShell() is shell
+                        )
+                    ),
+                )
             elif not name:
                 self.setText(initText)
 

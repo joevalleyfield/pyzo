@@ -21,6 +21,8 @@ ResultPage:
 
 """
 
+from pyzo.core.nativeRequests import tool_command
+
 import unicodedata
 import os.path as op
 
@@ -522,7 +524,7 @@ class ResultPage(QtWidgets.QWizardPage):
             )
             return
 
-        shell.executeCode(self.getCode(), "importwizard")
+        tool_command(shell, self.getCode(), code=True, filename="importwizard")
 
     def onBtnInsertClicked(self):
         editor = pyzo.editors.getCurrentEditor()

@@ -6,6 +6,8 @@ History class, which is a Qt model, and the PyzoHistoryViewer, which is a Qt vie
 
 """
 
+from pyzo.core.nativeRequests import tool_command
+
 import types
 import pyzo
 from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
@@ -150,15 +152,15 @@ class PyzoHistoryViewer(QtWidgets.QWidget):
         if shell is not None:
             for command in reversed(commands):
                 pyzo.command_history.append(command)
-            shell.executeCommand("\n".join(commands) + "\n")
+            tool_command(shell, "\n".join(commands) + "\n")
             if len(commands) > 1 and commands[-1].startswith(" "):
-                shell.executeCommand("\n")  # finalize multi-command
+                tool_command(shell, "\n")  # finalize multi-command
 
     def _onDoubleClicked(self, index):
         text = "\n".join(i.text() for i in self._list.selectedItems())
         shell = pyzo.shells.getCurrentShell()
         if shell is not None:
-            shell.executeCommand(text + "\n")
+            tool_command(shell, text + "\n")
             # Do not update history? Was this intended?
 
 

@@ -41,6 +41,7 @@ def run_world(request, tmp_path, monkeypatch):
         )
         shell.restart = lambda path, shell=shell: shell.restarts.append(path)
         shell._ctrl_command = SimpleNamespace(send=shell.commands.append)
+        shell.executeCommand = shell.commands.append
 
     def save(editor):
         w.saves.append(editor)

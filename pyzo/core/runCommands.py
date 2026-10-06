@@ -423,9 +423,7 @@ class RunCommandService(QtCore.QObject):
             if not execution.validate_file(provenance, source):
                 return False
             if (
-                execution.source_editor_context(
-                    editor, provenance, source, context=context
-                )
+                execution.source_editor_context(editor, provenance, source, context=context)
                 is None
             ):
                 return False
@@ -438,8 +436,12 @@ class RunCommandService(QtCore.QObject):
                     directory = os.path.normpath(
                         os.path.normcase(os.path.dirname(filename))
                     )
-                    shell._ctrl_command.send(f'%cd "{directory}"\n')
-                    shell._ctrl_command.send(f'%run -i "{filename}"\n')
+                    if provenance is None:
+                        shell._ctrl_command.send(f'%cd "{directory}"\n')
+                        shell._ctrl_command.send(f'%run -i "{filename}"\n')
+                    else:
+                        shell.executeCommand(f'%cd "{directory}"\n')
+                        shell.executeCommand(f'%run -i "{filename}"\n')
                 else:
                     shell.restart(filename)
 
@@ -451,9 +453,7 @@ class RunCommandService(QtCore.QObject):
             return False
         else:
             dialog = QtWidgets.QMessageBox(self._dialogParent())
-            dialog.setWindowTitle(
-                self._translate("menu dialog", "Could not run script.")
-            )
+            dialog.setWindowTitle(self._translate("menu dialog", "Could not run script."))
             dialog.setText(self._translate("menu", "Could not save the file."))
             dialog.setIcon(dialog.Icon.Warning)
             dialog.exec()

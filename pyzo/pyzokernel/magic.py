@@ -397,7 +397,7 @@ class Magician:
         return ""
 
     def cls(self, line, command):
-        sys._pyzoInterpreter.context._strm_action.send("cls")
+        sys._pyzoInterpreter.send_action("cls")
         return ""
 
     def open(self, line, command):
@@ -458,10 +458,10 @@ class Magician:
             print('Could not determine file name for object "%s".' % name)
         elif linenr is not None:
             action = "open %i %s" % (linenr, os.path.abspath(fname))
-            sys._pyzoInterpreter.context._strm_action.send(action)
+            sys._pyzoInterpreter.send_action(action)
         else:
             action = "open %s" % os.path.abspath(fname)
-            sys._pyzoInterpreter.context._strm_action.send(action)
+            sys._pyzoInterpreter.send_action(action)
         #
         return ""
 

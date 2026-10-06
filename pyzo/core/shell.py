@@ -12,6 +12,7 @@ code in it.
 import sys
 import time
 import re
+from uuid import uuid4
 
 import yoton
 
@@ -1261,6 +1262,10 @@ class PythonShell(BaseShell):
         # Retire the previous connection before preparing its replacement.
         self._brokerConnection = None
         # Create yoton context
+        self._nativeTransportEpoch = uuid4().hex
+        self._pendingWorkspaceOperations = {}
+        self._workspaceResults = []
+        self._workspaceStartupReceipt = None
         self._context = ct = yoton.Context()
 
         # Create stream channels
@@ -1271,6 +1276,7 @@ class PythonShell(BaseShell):
         self._strm_prompt = yoton.SubChannel(ct, "strm-prompt")
         self._strm_broker = yoton.SubChannel(ct, "strm-broker")
         self._strm_action = yoton.SubChannel(ct, "strm-action", yoton.OBJECT)
+        self._strm_result = yoton.SubChannel(ct, "strm-result", yoton.OBJECT)
 
         # Set channels to sync mode. This means that if Pyzo cannot process
         # the messages fast enough, the sending side is blocked for a short
@@ -1279,6 +1285,7 @@ class PythonShell(BaseShell):
             c.set_sync_mode(True)
 
         # Create control channels
+        self._ctrl_operation = yoton.PubChannel(ct, "ctrl-operation", yoton.OBJECT)
         self._ctrl_command = yoton.PubChannel(ct, "ctrl-command")
         self._ctrl_code = yoton.PubChannel(ct, "ctrl-code", yoton.OBJECT)
         self._ctrl_broker = yoton.PubChannel(ct, "ctrl-broker")
@@ -1288,9 +1295,7 @@ class PythonShell(BaseShell):
         self._stat_cd = yoton.StateChannel(ct, "stat-cd")
         self._stat_debug = yoton.StateChannel(ct, "stat-debug", yoton.OBJECT)
         self._stat_startup = yoton.StateChannel(ct, "stat-startup", yoton.OBJECT)
-        self._stat_breakpoints = yoton.StateChannel(
-            ct, "stat-breakpoints", yoton.OBJECT
-        )
+        self._stat_breakpoints = yoton.StateChannel(ct, "stat-breakpoints", yoton.OBJECT)
 
         self._stat_startup.received.bind(self._onReceivedStartupInfo)
 
@@ -1300,7 +1305,9 @@ class PythonShell(BaseShell):
 
         # Connect! The broker will only start the kernel AFTER
         # we connect, so we do not miss out on anything.
-        slot = pyzo.localKernelManager.createKernel(finishKernelInfo(info))
+        kernel_info = finishKernelInfo(info)
+        kernel_info.nativeTransportEpoch = self._nativeTransportEpoch
+        slot = pyzo.localKernelManager.createKernel(kernel_info)
         self._brokerConnection = ct.connect("localhost:{}".format(slot))
         self._brokerConnection.closed.bind(self._onConnectionClose)
 
@@ -1324,7 +1331,20 @@ class PythonShell(BaseShell):
         return self._stat_cd.recv()
 
     def _onReceivedStartupInfo(self, channel):
+        if channel is not self._stat_startup:
+            return
         startup_info = channel.recv()
+        if (
+            not startup_info
+            or startup_info.get("nativeTransportEpoch") != self._nativeTransportEpoch
+        ):
+            return
+        if startup_info.get("version") and startup_info.get("workspaceReceipt"):
+            self._workspaceStartupReceipt = {
+                "receipt": startup_info["workspaceReceipt"],
+                "epoch": self._nativeTransportEpoch,
+                "phase": "startup",
+            }
 
         # Store the whole dict
         self._startup_info = startup_info
@@ -1364,6 +1384,10 @@ class PythonShell(BaseShell):
     def processCallTip(self, cto):
         """Processes a calltip request using a CallTipObject instance."""
 
+        from .nativeRequests import prepare_introspection, request
+
+        if not getattr(cto, "_nativeTicket", None) and not prepare_introspection(cto):
+            return
         # Try using buffer first (not if we're not the requester)
         if self is cto.textCtrl:
             if cto.tryUsingBuffer():
@@ -1375,12 +1399,19 @@ class PythonShell(BaseShell):
         self._currentCTO = cto
 
         # Post request
-        if cto.useIntermediateResult:
-            future = self._request.signatureWithIntermediateResult(cto.name)
-        else:
-            future = self._request.signature(cto.name)
-        future.add_done_callback(self._processCallTip_response)
-        future.cto = cto
+        method = (
+            "signatureWithIntermediateResult" if cto.useIntermediateResult else "signature"
+        )
+        request(
+            self,
+            "completion",
+            cto.textCtrl,
+            method,
+            [cto.name],
+            self._processCallTip_response,
+            ticket=getattr(cto, "_nativeTicket", None),
+            attributes={"cto": cto},
+        )
 
     def _processCallTip_response(self, future):
         """Process response of shell to show signature."""
@@ -1399,21 +1430,23 @@ class PythonShell(BaseShell):
         # First see if this is still the right editor (can also be a shell)
         editor1 = pyzo.editors.getCurrentEditor()
         editor2 = pyzo.shells.getCurrentShell()
-        if cto.textCtrl not in [editor1, editor2]:
+        display_current = cto.textCtrl in [editor1, editor2]
+        if future.ticket is None and not display_current:
             # The editor or shell starting the autocomp is no longer active
             cto.textCtrl.autocompleteCancel()
             return
 
         # Invalid response
         if not response:
-            cto.textCtrl.autocompleteCancel()
+            if display_current:
+                cto.textCtrl.autocompleteCancel()
             return
 
         if cto.useIntermediateResult:
             assert response.startswith("__pyzo__calltip")
             response = cto.name + response[len("__pyzo__calltip") :]
         # If still required, show tip, otherwise only store result
-        if cto is self._currentCTO:
+        if cto is self._currentCTO and display_current:
             cto.finish(response)
         else:
             cto.setBuffer(response)
@@ -1421,6 +1454,10 @@ class PythonShell(BaseShell):
     def processAutoComp(self, aco):
         """Processes an autocomp request using an AutoCompObject instance."""
 
+        from .nativeRequests import prepare_introspection, request
+
+        if not prepare_introspection(aco):
+            return
         # Try using buffer first (not if we're not the requester)
         if self is aco.textCtrl:
             if aco.tryUsingBuffer():
@@ -1441,18 +1478,20 @@ class PythonShell(BaseShell):
         self._currentACO = aco
 
         # Post request
+        method = "dir2" if aco.name.endswith("[") else "dir"
+        name = aco.name[:-1] if aco.name.endswith("[") else aco.name
         if aco.useIntermediateResult:
-            if aco.name.endswith("["):  # if key auto-completion
-                future = self._request.dir2WithIntermediateResult(aco.name[:-1])
-            else:
-                future = self._request.dirWithIntermediateResult(aco.name)
-        else:
-            if aco.name.endswith("["):  # if attribute or name auto-completion
-                future = self._request.dir2(aco.name[:-1])
-            else:
-                future = self._request.dir(aco.name)
-        future.add_done_callback(self._processAutoComp_response)
-        future.aco = aco
+            method += "WithIntermediateResult"
+        request(
+            self,
+            "completion",
+            aco.textCtrl,
+            method,
+            [name],
+            self._processAutoComp_response,
+            ticket=getattr(aco, "_nativeTicket", None),
+            attributes={"aco": aco},
+        )
 
     def _processAutoComp_response(self, future):
         """Process the response of the shell for the auto completion."""
@@ -1471,7 +1510,8 @@ class PythonShell(BaseShell):
         # First see if this is still the right editor (can also be a shell)
         editor1 = pyzo.editors.getCurrentEditor()
         editor2 = pyzo.shells.getCurrentShell()
-        if aco.textCtrl not in [editor1, editor2]:
+        display_current = aco.textCtrl in [editor1, editor2]
+        if future.ticket is None and not display_current:
             # The editor or shell starting the autocomp is no longer active
             aco.textCtrl.autocompleteCancel()
             return
@@ -1481,9 +1521,7 @@ class PythonShell(BaseShell):
         if response is not None:
             if aco.name.endswith("["):  # if key auto-completion
                 foundNames = [
-                    name[1:-1]
-                    for name, type_, kind, repr_ in response
-                    if name[0] == "["
+                    name[1:-1] for name, type_, kind, repr_ in response if name[0] == "["
                 ]
                 if response and response[-1][0] == "# ... too many entries":
                     foundNames.append(response[-1][0])
@@ -1496,13 +1534,23 @@ class PythonShell(BaseShell):
             # No names found for the requested name, and no names from
             # fictive class members (via code parser in the editor).
             # Let's try to import it.
-            importNames, importLines = pyzo.parser.getFictiveImports(editor1)
+            source = aco.textCtrl if future.ticket is not None else editor1
+            if future.ticket is not None and source is self:
+                importNames, importLines = [], {}
+            else:
+                importNames, importLines = pyzo.parser.getFictiveImports(source)
             baseName = aco.nameInImportNames(importNames)
             if baseName:
                 line = importLines[baseName].strip()
                 if line not in self._importAttempts:
                     # Do import
-                    self.processLine(line + "  # auto-import")
+                    if future.ticket is None:
+                        self.processLine(line + "  # auto-import")
+                    elif not future.ticket.service.dispatch(
+                        future.ticket.provenance,
+                        lambda shell: shell.executeCommand(line + "  # auto-import\n"),
+                    ):
+                        return
                     self._importAttempts.append(line)
                     # Wait a barely noticable time to increase the chances
                     # that the import is complete when we repost the request.
@@ -1514,7 +1562,7 @@ class PythonShell(BaseShell):
                     self.processAutoComp(aco)
         else:
             # If still required, show list, otherwise only store result
-            if self._currentACO is aco:
+            if self._currentACO is aco and display_current:
                 aco.finish()
             else:
                 aco.setBuffer()
@@ -1527,7 +1575,8 @@ class PythonShell(BaseShell):
         # Ensure edit line is selected (to reset scrolling to end)
         self.ensureCursorAtEditLine()
 
-        self._ctrl_command.send(text)
+        if not self._sendWorkspaceOperation("command", text):
+            self._ctrl_command.send(text)
 
     def executeCode(self, text, fname, lineno=None, cellName=None, changeDir=False):
         """Execute (run) a large piece of code in the remote shell.
@@ -1600,7 +1649,113 @@ class PythonShell(BaseShell):
             "cellName": cellName,
             "changeDir": int(changeDir),
         }
-        self._ctrl_code.send(msg)
+        if not self._sendWorkspaceOperation("code", msg):
+            self._ctrl_code.send(msg)
+
+    def _rememberWorkspaceOperation(self, provenance, *, recycle=False):
+        from .nativeRequests import wire_receipt
+
+        receipt = wire_receipt(provenance)
+        pending = self._pendingWorkspaceOperations
+        pending[receipt["operation_id"]] = (
+            receipt,
+            provenance,
+            self._nativeTransportEpoch,
+            recycle,
+        )
+        while len(pending) > 128:
+            pending.pop(next(iter(pending)))
+        return receipt
+
+    def _sendWorkspaceOperation(self, kind, payload):
+        provenance = getattr(self, "_workspaceOperation", None)
+        if provenance is None:
+            from .nativeRequests import execution_service
+
+            service = execution_service()
+            if service is None:
+                return False
+            from spikes.peer_frames.execution_routing import ExecutionCommand
+
+            command = (
+                ExecutionCommand.DEBUGGER
+                if kind == "command" and payload.startswith("DB ")
+                else ExecutionCommand.EXECUTE_LINE
+                if kind == "command"
+                else ExecutionCommand.EXECUTE_FILE
+            )
+            result = service.resolve_shell(self, command)
+            if not result.resolved:
+                return True  # peer refusal must not fall through to untagged transport
+            provenance = result.provenance
+        receipt = self._rememberWorkspaceOperation(provenance)
+        self._ctrl_operation.send(
+            {
+                "kind": kind,
+                "payload": payload,
+                "receipt": receipt,
+                "epoch": self._nativeTransportEpoch,
+            }
+        )
+        return True
+
+    def _acceptWorkspaceMessage(self, message):
+        from dataclasses import replace
+        from .nativeRequests import execution_service
+
+        if (
+            not isinstance(message, dict)
+            or message.get("epoch") != self._nativeTransportEpoch
+        ):
+            return False
+        receipt = message.get("receipt")
+        if receipt is None:
+            return True  # generation-scoped native status, without an editor operation
+        if not isinstance(receipt, dict):
+            return False
+        entry = self._pendingWorkspaceOperations.get(receipt.get("operation_id"))
+        if entry is None or receipt != entry[0] or entry[2] != self._nativeTransportEpoch:
+            return False
+        service = execution_service()
+        if service is None:
+            return False
+        provenance = entry[1]
+        if entry[3]:
+            # Script startup belongs to the exact successor transport requested by
+            # this operation, never an arbitrary later recycle of the same shell.
+            service._synchronize()
+            current = service.router.shell_state(provenance.shell_id)
+            provenance = replace(
+                provenance,
+                kernel_generation_id=current.kernel_generation_id,
+                shell_epoch=current.epoch,
+            )
+        return service.provenance_is_current(provenance)
+
+    def _consumeWorkspaceResult(self, message):
+        if (
+            not isinstance(message, dict)
+            or message.get("phase") not in ("accepted", "complete", "startup")
+            or not isinstance(message.get("receipt"), dict)
+            or not self._acceptWorkspaceMessage(message)
+        ):
+            return False
+        if message["phase"] == "startup":
+            from .nativeRequests import execution_service
+
+            service = execution_service()
+            provenance = self._pendingWorkspaceOperations[
+                message["receipt"]["operation_id"]
+            ][1]
+            message = dict(
+                message,
+                successor_generation_id=str(
+                    service.router.shell_state(provenance.shell_id).kernel_generation_id
+                ),
+            )
+        self._workspaceResults.append(message)
+        del self._workspaceResults[:-128]
+        return True
 
     def sendBreakPoints(self, breaks):
         """Send all breakpoints."""
@@ -1662,6 +1817,18 @@ class PythonShell(BaseShell):
 
         # Do any actions?
         action = self._strm_action.recv(False)
+        if isinstance(action, dict):
+            receipt = action.get("receipt")
+            consumer_current = receipt is None or (
+                isinstance(receipt, dict)
+                and str(pyzo.application.workspaces.active_identity)
+                == receipt.get("workspace_id")
+            )
+            action = (
+                action.get("action")
+                if consumer_current and self._acceptWorkspaceMessage(action)
+                else None
+            )
         if action:
             idle = False
             if action == "cls":
@@ -1681,6 +1848,9 @@ class PythonShell(BaseShell):
             else:
                 print("Unknown action: {}".format(action))
 
+        for result in self._strm_result.recv_all():
+            self._consumeWorkspaceResult(result)
+
         # ----- status
 
         newInterval = POLL_TIMER_INTERVAL_IDLE if idle else POLL_TIMER_INTERVAL_BUSY
@@ -1698,8 +1868,16 @@ class PythonShell(BaseShell):
             self._state = state
             self.stateChanged.emit(self)
 
+        if self._workspaceStartupReceipt is not None:
+            if self._consumeWorkspaceResult(self._workspaceStartupReceipt):
+                self._workspaceStartupReceipt = None
+
         # Update debug status
         state = self._stat_debug.recv()
+        if isinstance(state, dict) and "epoch" in state:
+            if not self._acceptWorkspaceMessage(state):
+                return
+            state = state["state"]
         if state != self._debugState:
             self._debugState = state
             self.debugStateChanged.emit(self)
@@ -1731,6 +1909,14 @@ class PythonShell(BaseShell):
 
         # Get info
         info = finishKernelInfo(self._info, scriptFile)
+        self._nativeTransportEpoch = uuid4().hex
+        info.nativeTransportEpoch = self._nativeTransportEpoch
+        provenance = getattr(self, "_workspaceOperation", None)
+        if provenance is not None:
+            info.workspaceReceipt = self._rememberWorkspaceOperation(
+                provenance, recycle=True
+            )
+        self._workspaceStartupReceipt = None
 
         # Create message and send
         msg = "RESTART\n" + ssdf.saves(info)

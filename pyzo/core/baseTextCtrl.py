@@ -590,17 +590,14 @@ class BaseTextCtrl(CodeEditor):
             _, tokens = self.getTokensUpToCursor(cursor)
             nameTokens, needleToken = parseLine_autocomplete(tokens)
             if nameTokens:
-                name = "{}.{}".format(
-                    "".join([str(t) for t in nameTokens]), needleToken
-                )
+                name = "{}.{}".format("".join([str(t) for t in nameTokens]), needleToken)
             elif needleToken:
                 name = str(needleToken)
 
         if name != "":
-            hw.setObjectName(name, True)
+            hw.setObjectName(name, True, requestSource=self)
 
-    @staticmethod
-    def processHelp(name, source, addToHist=False):
+    def processHelp(self, name, source, addToHist=False):
         """Show help on the given full object name.
         - called when going up/down in the autocompletion list or showing calltips.
         """
@@ -612,11 +609,13 @@ class BaseTextCtrl(CodeEditor):
         # Get the shell
         shell = pyzo.shells.getCurrentShell()
         # Both should exist
-        if not hw or not shell:
+        from .nativeRequests import execution_service
+
+        if not hw or (not shell and execution_service() is None):
             return
 
         if name:
-            hw.helpFromExtension(name, source, addToHist)
+            hw.helpFromExtension(name, source, addToHist, requestSource=self)
 
     def _getFullAutocompleteName(self, name):
         if self._autoCompBuffer_intermediateResultName is not None:
@@ -763,6 +762,10 @@ class CallTipObject:
 
         Returns True on success.
         """
+        from .nativeRequests import buffer_is_current
+
+        if not buffer_is_current(self, "_callTipBuffer_receipt"):
+            return False
         bufferName = self.textCtrl._callTipBuffer_name
         t = time.time() - self.textCtrl._callTipBuffer_time
         if self.bufferName == bufferName and t < 0:
@@ -784,6 +787,7 @@ class CallTipObject:
 
     def setBuffer(self, callTipText, timeout=4):
         """Sets the buffer with the provided text."""
+        self.textCtrl._callTipBuffer_receipt = getattr(self, "_nativeTicket", None)
         self.textCtrl._callTipBuffer_name = self.bufferName
         self.textCtrl._callTipBuffer_intermediateResultName = (
             "__pyzo__calltip" if self.useIntermediateResult else None
@@ -795,7 +799,7 @@ class CallTipObject:
         highlightFunctionName = not self.useIntermediateResult
         # ... because "foo().bar().func(" would only highlight "foo"
         self.textCtrl.calltipShow(self.offset, callTipText, highlightFunctionName)
-        BaseTextCtrl.processHelp(self.name, "calltip")
+        self.textCtrl.processHelp(self.name, "calltip")
 
 
 class AutoCompObject:
@@ -820,6 +824,10 @@ class AutoCompObject:
 
         Returns True on success.
         """
+        from .nativeRequests import buffer_is_current
+
+        if not buffer_is_current(self, "_autoCompBuffer_receipt"):
+            return False
         bufferName = self.textCtrl._autoCompBuffer_name
         t = time.time() - self.textCtrl._autoCompBuffer_time
         if self.bufferName == bufferName and t < 0:
@@ -865,6 +873,7 @@ class AutoCompObject:
         names = list(names)
         names.sort(key=str.upper)
         # Store
+        self.textCtrl._autoCompBuffer_receipt = getattr(self, "_nativeTicket", None)
         self.textCtrl._autoCompBuffer_name = self.bufferName
         self.textCtrl._autoCompBuffer_intermediateResultName = (
             "__pyzo__autocomp" if self.useIntermediateResult else None

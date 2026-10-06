@@ -1,3 +1,4 @@
+from pyzo.core.nativeRequests import tool_command
 import re
 import sys
 import os.path as op
@@ -523,7 +524,7 @@ class Projects(QtWidgets.QWidget):
             # cd to the directory
             shell = pyzo.shells.getCurrentShell()
             if shell:
-                shell.executeCommand("cd " + d.path + "\n")
+                tool_command(shell, "cd " + d.path + "\n")
 
     def onButtonPressed(self):
         if self._but.menu():
