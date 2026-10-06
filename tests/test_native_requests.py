@@ -338,6 +338,28 @@ def test_legacy_immediate_delivery_preserves_raw_future_result(monkeypatch):
     assert seen == [("len", "raw legacy")]
 
 
+def test_pre_peer_compatibility_reply_cannot_update_an_owned_consumer(
+    native, monkeypatch
+):
+    w = native
+    monkeypatch.setattr(pyzo, "application", None)
+    future = Future("pre-peer response")
+    shell = SimpleNamespace(_request=SimpleNamespace(doc=lambda name: future))
+    request(
+        shell,
+        "help",
+        w.consumer,
+        "doc",
+        ["len"],
+        lambda reply: w.values.append(reply.result()),
+    )
+    monkeypatch.setattr(
+        pyzo, "application", SimpleNamespace(workspace_execution=w.service)
+    )
+    future.deliver()
+    assert not w.values
+
+
 def test_retired_startup_channel_and_epoch_do_not_touch_native_widget(monkeypatch):
     from pyzo.qt import QtWidgets
     from pyzo.util._locale import translate

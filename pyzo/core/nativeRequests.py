@@ -205,6 +205,8 @@ def request(
         setattr(reply, name, value)
 
     def done(_):
+        if ticket is None and execution_service() is not None:
+            return  # a pre-peer compatibility request has no admissible receipt
         if ticket is not None:
             if not ticket.current() or shell._nativeTransportEpoch != epoch:
                 return
