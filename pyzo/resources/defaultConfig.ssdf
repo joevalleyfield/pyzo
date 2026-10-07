@@ -59,6 +59,7 @@ settings= dict:
     autoClose_Brackets = 1
     theme = ''  # will be automatically initialized with "default" or "default_dark"
     qtscalefactor = ''
+    debuggerSelection = 'independent'  # requested; effective mode is reported per interpreter
 
 advanced = dict:
     shellMaxLines = 10000

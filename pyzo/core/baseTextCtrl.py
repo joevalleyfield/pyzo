@@ -7,6 +7,7 @@ is common for both shells and editors.
 """
 
 import pyzo
+from pyzo.core.workspaceContext import config_for, context_for
 import os
 import sys
 import time
@@ -324,10 +325,10 @@ class BaseTextCtrl(CodeEditor):
 
         # Set style/theme
         try:
-            theme = pyzo.themes[pyzo.config.settings.theme.lower()]["data"]
+            theme = pyzo.themes[config_for(self).settings.theme.lower()]["data"]
             self.setStyle(theme)
             # autocomplete popup theme
-            if pyzo.config.view.get("autoComplete_withTheme", False):
+            if config_for(self).view.get("autoComplete_withTheme", False):
                 editor_text_theme = theme["editor.text"].split(",")
                 popup_background = editor_text_theme[1].split(":")[1]
                 popup_text = editor_text_theme[0].split(":")[1]
@@ -339,22 +340,22 @@ class BaseTextCtrl(CodeEditor):
             print("Could not load theme: " + str(err))
 
         # Set font and zooming
-        self.setFont(pyzo.config.view.fontname)
-        self.setZoom(pyzo.config.view.zoom)
-        self.setShowWhitespace(pyzo.config.view.showWhitespace)
-        self.setHighlightMatchingBracket(pyzo.config.view.highlightMatchingBracket)
+        self.setFont(config_for(self).view.fontname)
+        self.setZoom(config_for(self).view.zoom)
+        self.setShowWhitespace(config_for(self).view.showWhitespace)
+        self.setHighlightMatchingBracket(config_for(self).view.highlightMatchingBracket)
 
         # Create calmed functions to avoid unnecessary updates during a quick sequence of
         # keystrokes.
         self._calmedIntrospectNow = CalmedFunc(
-            self._introspectNow, pyzo.config.advanced.autoCompDelay
+            self._introspectNow, config_for(self).advanced.autoCompDelay
         )
 
         # Avoid unnecessary introspections while quickly navigating the autocompletion list
         # via arrow keys. For now, we use the same delay parameter as for updating the
         # autocompletion list.
         self._calmedUpdateHelpFromAutocomplete = CalmedFunc(
-            self.updateHelpFromAutocomplete, pyzo.config.advanced.autoCompDelay
+            self.updateHelpFromAutocomplete, config_for(self).advanced.autoCompDelay
         )
 
         # For buffering autocompletion and calltip info
@@ -368,19 +369,19 @@ class BaseTextCtrl(CodeEditor):
         self._autoCompBuffer_result = []
 
         self.setAutoCompletionAcceptKeysFromStr(
-            pyzo.config.settings.autoComplete_acceptKeys
+            config_for(self).settings.autoComplete_acceptKeys
         )
 
         self.completer().highlighted.connect(self._onAutocompleteSelectionChanged)
-        self.setIndentUsingSpaces(pyzo.config.settings.defaultIndentUsingSpaces)
-        self.setIndentWidth(pyzo.config.settings.defaultIndentWidth)
-        self.setAutocompletPopupSize(*pyzo.config.view.autoComplete_popupSize)
+        self.setIndentUsingSpaces(config_for(self).settings.defaultIndentUsingSpaces)
+        self.setIndentWidth(config_for(self).settings.defaultIndentWidth)
+        self.setAutocompletPopupSize(*config_for(self).view.autoComplete_popupSize)
         self.setAutocompleteCaseSensitive(
-            pyzo.config.settings.autoComplete_caseSensitive
+            config_for(self).settings.autoComplete_caseSensitive
         )
-        self.setAutocompleteMinChars(pyzo.config.settings.autoComplete_minChars)
-        self.setAutoClose_Quotes(pyzo.config.settings.autoClose_Quotes)
-        self.setAutoClose_Brackets(pyzo.config.settings.autoClose_Brackets)
+        self.setAutocompleteMinChars(config_for(self).settings.autoComplete_minChars)
+        self.setAutoClose_Quotes(config_for(self).settings.autoClose_Quotes)
+        self.setAutoClose_Brackets(config_for(self).settings.autoClose_Brackets)
         self.setAutocompleteFinishedCallback(self._onAutocompleteFinished)
         self.setCalltipFinishedCallback(lambda: self.restoreHelp("calltip"))
 
@@ -394,7 +395,7 @@ class BaseTextCtrl(CodeEditor):
         # Update the delay just in case the user changed the value.
         # Otherwise the user would have to restart Pyzo for the changes to take effect.
         self._calmedUpdateHelpFromAutocomplete.set_delay(
-            pyzo.config.advanced.autoCompDelay
+            config_for(self).advanced.autoCompDelay
         )
 
         self._calmedUpdateHelpFromAutocomplete(name)
@@ -479,7 +480,7 @@ class BaseTextCtrl(CodeEditor):
 
         # Update the delay just in case the user changed the value.
         # Otherwise the user would have to restart Pyzo for the changes to take effect.
-        self._calmedIntrospectNow.set_delay(pyzo.config.advanced.autoCompDelay)
+        self._calmedIntrospectNow.set_delay(config_for(self).advanced.autoCompDelay)
 
         if not delay:
             self._calmedIntrospectNow.clear_pending()
@@ -492,7 +493,7 @@ class BaseTextCtrl(CodeEditor):
         """
         tokens = tokensUptoCursor
 
-        if pyzo.config.settings.autoCallTip:
+        if config_for(self).settings.autoCallTip:
             # Parse the line, to get the name of the function we should calltip
             # if the name is empty/None, we should not show a signature
             fullNameTokens, indParenToken = parseLine_signature(tokens)
@@ -515,16 +516,14 @@ class BaseTextCtrl(CodeEditor):
                 # Process
                 indOfOpenParen = tokens[indParenToken].start
                 offset = (
-                    cursor.positionInBlock()
-                    - indOfOpenParen
-                    + len(str(fullNameTokens[-1]))
+                    cursor.positionInBlock() - indOfOpenParen + len(str(fullNameTokens[-1]))
                 )
                 cto = CallTipObject(self, fullName, offset, useIntermediateResult)
                 self.processCallTip(cto)
             else:
                 self.calltipCancel()
 
-        if tryAutoComp and pyzo.config.settings.autoComplete:
+        if tryAutoComp and config_for(self).settings.autoComplete:
             # Parse the line, to see what name or attribute we need to auto-complete
             nameTokens, needleToken = parseLine_autocomplete(tokens)
             keyLookUp = False
@@ -574,7 +573,7 @@ class BaseTextCtrl(CodeEditor):
         pass
 
     def helpOnText(self, pos):
-        hw = pyzo.toolManager.getTool("pyzointeractivehelp")
+        hw = context_for(self).toolManager.getTool("pyzointeractivehelp")
         if not hw:
             return
         name = self.textCursor().selectedText().strip()
@@ -605,7 +604,7 @@ class BaseTextCtrl(CodeEditor):
         # uses parse_autocomplete() to find baseName and objectName
 
         # Get help tool
-        hw = pyzo.toolManager.getTool("pyzointeractivehelp")
+        hw = context_for(self).toolManager.getTool("pyzointeractivehelp")
         # Get the shell
         shell = pyzo.shells.getCurrentShell()
         # Both should exist
@@ -717,10 +716,8 @@ class BaseTextCtrl(CodeEditor):
                     return
 
         # Invoke autocomplete via tab key?
-        elif (
-            event.modifiers() == KM.NoModifier and event.key() == QtCore.Qt.Key.Key_Tab
-        ):
-            if pyzo.config.settings.autoComplete and not self.autocompleteActive():
+        elif event.modifiers() == KM.NoModifier and event.key() == QtCore.Qt.Key.Key_Tab:
+            if config_for(self).settings.autoComplete and not self.autocompleteActive():
                 cursor = self.textCursor()
                 if cursor.position() == cursor.anchor():
                     text = cursor.block().text()[: cursor.positionInBlock()]
@@ -734,7 +731,7 @@ class BaseTextCtrl(CodeEditor):
         if ordKey:
             if (
                 ordKey >= 32 or ordKey == 8  # 8: '\b'
-            ) and pyzo.config.settings.autoComplete == 1:
+            ) and config_for(self).settings.autoComplete == 1:
                 delay = ordKey != 46  # 46: '.'
                 # If a char that allows completion or backspace or dot was pressed
                 self.introspect(True, delay)

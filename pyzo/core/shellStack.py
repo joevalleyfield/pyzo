@@ -10,6 +10,7 @@ import webbrowser
 from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
 
 import pyzo
+from pyzo.core.workspaceContext import config_for
 from pyzo import translate
 from pyzo.core.shell import PythonShell
 from pyzo.core.pyzoLogging import print  # noqa
@@ -108,7 +109,7 @@ class ShellStackWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout()
         layout.setSpacing(0)
         # set margins
-        margin = pyzo.config.view.widgetMargin
+        margin = config_for(self).view.widgetMargin
         layout.setContentsMargins(margin, margin, margin, margin)
 
         layout.addWidget(self._toolbar)
@@ -710,7 +711,7 @@ class InterpreterHelper(QtWidgets.QWidget):
         python_link = '<a href="https://www.python.org/">Python</a>'
         conda_link = '<a href="https://miniconda.pyzo.org">Miniconda</a>'
         self._the_exe = None
-        configs = pyzo.config.shellConfigs2
+        configs = config_for(self).shellConfigs2
 
         # Hide now?
         if configs and configs[0].exe:
@@ -793,7 +794,7 @@ class InterpreterHelper(QtWidgets.QWidget):
     def editShellConfig(self):
         from pyzo.core.shellInfoDialog import ShellInfoDialog
 
-        d = ShellInfoDialog()
+        d = ShellInfoDialog(self)
         d.exec()
         self.refresh()
         self.restart_shell()
@@ -801,11 +802,11 @@ class InterpreterHelper(QtWidgets.QWidget):
     def useFound(self):
         # Set newfound interpreter
         if self._the_exe:
-            configs = pyzo.config.shellConfigs2
+            configs = config_for(self).shellConfigs2
             if not configs:
                 from pyzo.core.kernelbroker import KernelInfo
 
-                pyzo.config.shellConfigs2.append(KernelInfo())
+                config_for(self).shellConfigs2.append(KernelInfo())
             configs[0].exe = self._the_exe
             self.restart_shell()
         self.refresh()
@@ -819,4 +820,4 @@ class InterpreterHelper(QtWidgets.QWidget):
         shell = shells.getCurrentShell()
         if shell is not None:
             shell.closeShell()
-        shells.addShell(pyzo.config.shellConfigs2[0])
+        shells.addShell(config_for(self).shellConfigs2[0])

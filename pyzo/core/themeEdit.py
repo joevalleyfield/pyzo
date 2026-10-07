@@ -3,6 +3,7 @@ import os
 from pyzo.qt import QtCore, QtGui, QtWidgets
 
 import pyzo
+from pyzo.core.workspaceContext import config_for
 from pyzo.util import zon as ssdf
 from pyzo.core.pyzoLogging import print
 import pyzo.core.baseTextCtrl
@@ -32,8 +33,8 @@ class FakeEditor(pyzo.core.baseTextCtrl.BaseTextCtrl):
 
     tokenClicked = QtCore.Signal(str)
 
-    def __init__(self, text=""):
-        super().__init__()
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
 
         # set parser to enable syntaxic coloration
         self.setParser("python3")
@@ -290,7 +291,7 @@ class ThemeEditorWidget(QtWidgets.QWidget):
         for i, themeName in enumerate(self.themes.keys()):
             # We store the themeName in data in case the user renames one
             curThemeCmb.addItem(themeName, userData=themeName)
-            if themeName == pyzo.config.settings.theme.lower():
+            if themeName == config_for(self).settings.theme.lower():
                 current_index = i
         curThemeCmb.addItem("New...")
 
@@ -320,7 +321,7 @@ class ThemeEditorWidget(QtWidgets.QWidget):
         # Init
         if current_index >= 0:
             curThemeCmb.setCurrentIndex(current_index)
-            self.setTheme(pyzo.config.settings.theme)
+            self.setTheme(config_for(self).settings.theme)
 
     def createTheme(self):
         """Create a new theme based on the current
@@ -433,13 +434,18 @@ class ThemeEditorWidget(QtWidgets.QWidget):
     def ok(self):
         """On user click saves the cur_theme if modified
         and restart pyzo if the theme changed"""
-        prev = pyzo.config.settings.theme
+        prev = config_for(self).settings.theme
         new = self.cur_theme["name"]
 
         self.saveTheme()
 
         if prev != new:
-            pyzo.config.settings.theme = new
+            config_for(self).settings.theme = new
+            if getattr(pyzo, "workspaceContext", None) is not None:
+                from pyzo.core.menu import show_workspace_capabilities
+
+                show_workspace_capabilities(self)
+                return
             pyzo.saveConfig()
             # This may be better
             if pyzo.application is not None:
@@ -484,8 +490,8 @@ class EditColorDialog(QtWidgets.QDialog):
             theme["data"] = theme["data"].copy()
             themes[name] = theme
 
-        self.editor = FakeEditor()
-        self.editColor = ThemeEditorWidget(themes=themes, editor=self.editor)
+        self.editor = FakeEditor(parent=self)
+        self.editColor = ThemeEditorWidget(themes, self, editor=self.editor)
         self.editColor.done.connect(self.done)
         layout = QtWidgets.QHBoxLayout()
         layout.addWidget(self.editor, 1)

@@ -18,6 +18,7 @@ from pyzo.core.menu import EditorContextMenu
 from pyzo.core.baseTextCtrl import BaseTextCtrl, normalizePath
 from pyzo.core.pyzoLogging import print
 import pyzo
+from pyzo.core.workspaceContext import config_for, context_for
 
 
 """
@@ -234,7 +235,7 @@ def createEditor(parent, filename=None):
         editor.setParser(parser)
     else:
         # todo: rename style -> parser
-        editor.setParser(pyzo.config.settings.defaultStyle)
+        editor.setParser(config_for(parent).settings.defaultStyle)
 
     # return
     return editor
@@ -256,18 +257,18 @@ class PyzoEditor(BaseTextCtrl):
 
         # View settings
         # TODO: self.setViewWrapSymbols(view.showWrapSymbols)
-        self.setShowLineEndings(pyzo.config.view.showLineEndings)
-        self.setShowIndentationGuides(pyzo.config.view.showIndentationGuides)
+        self.setShowLineEndings(config_for(self).view.showLineEndings)
+        self.setShowIndentationGuides(config_for(self).view.showIndentationGuides)
         #
-        self.setWrap(bool(pyzo.config.view.wrap))
-        self.setHighlightCurrentLine(pyzo.config.view.highlightCurrentLine)
-        self.setLongLineIndicatorPosition(pyzo.config.view.edgeColumn)
+        self.setWrap(bool(config_for(self).view.wrap))
+        self.setHighlightCurrentLine(config_for(self).view.highlightCurrentLine)
+        self.setLongLineIndicatorPosition(config_for(self).view.edgeColumn)
         # TODO: self.setFolding( int(view.codeFolding)*5 )
         # bracematch is set in baseTextCtrl, since it also applies to shells
         # dito for zoom and tabWidth
 
         # Set line endings to default
-        self.lineEndings = pyzo.config.settings.defaultLineEndings
+        self.lineEndings = config_for(self).settings.defaultLineEndings
 
         # Do not use utf-8-sig byte order mark as a default
         self.useBom = False
@@ -370,9 +371,7 @@ class PyzoEditor(BaseTextCtrl):
             msg = (
                 'Error decoding contents of file "{}". '
                 "Already tried {} without success. "
-                "--> now using ascii with backslashreplace".format(
-                    filepath, encodingsToTry
-                )
+                "--> now using ascii with backslashreplace".format(filepath, encodingsToTry)
             )
 
             print(msg)
@@ -389,7 +388,7 @@ class PyzoEditor(BaseTextCtrl):
         indentWidth, trailing = determineIndentationAndTrailingWS(text)
         self.removeTrailingWS = trailing < 10  # not too much for ugly diffs
         if indentWidth == -1:  # Tabs
-            self.setIndentWidth(pyzo.config.settings.defaultIndentWidth)
+            self.setIndentWidth(config_for(self).settings.defaultIndentWidth)
             self.setIndentUsingSpaces(False)
         elif indentWidth:
             self.setIndentWidth(indentWidth)
@@ -428,7 +427,7 @@ class PyzoEditor(BaseTextCtrl):
         """Overloaded version of justifyText to make it use our
         configurable justificationwidth.
         """
-        super().justifyText(pyzo.config.settings.justificationWidth)
+        super().justifyText(config_for(self).settings.justificationWidth)
 
     def showRunCursor(self, cursor):
         """Momentarily highlight a piece of code to show that this is being executed"""
@@ -467,19 +466,15 @@ class PyzoEditor(BaseTextCtrl):
                 "File has also been modified outside of the editor:\n" + self._filename
             )
             dlg.setInformativeText("Do you want to reload?")
-            btnReload = dlg.addButton(
-                "Reload", QtWidgets.QMessageBox.ButtonRole.AcceptRole
-            )
-            dlg.addButton(
-                "Keep this version", QtWidgets.QMessageBox.ButtonRole.RejectRole
-            )
+            btnReload = dlg.addButton("Reload", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+            dlg.addButton("Keep this version", QtWidgets.QMessageBox.ButtonRole.RejectRole)
             dlg.setDefaultButton(btnReload)
 
             # get user's decision
             dlg.exec()
             doReload = dlg.clickedButton() == btnReload
         else:
-            if pyzo.config.advanced.autoReloadFilesInEditor:
+            if config_for(self).advanced.autoReloadFilesInEditor:
                 doReload = True
                 print("auto-reloading file", self._filename)
             else:
@@ -507,7 +502,7 @@ class PyzoEditor(BaseTextCtrl):
                     doReload = True
                 elif dlg.clickedButton() == btnAlwaysReload:
                     doReload = True
-                    pyzo.config.advanced.autoReloadFilesInEditor = 1
+                    config_for(self).advanced.autoReloadFilesInEditor = 1
 
                     QtWidgets.QMessageBox.information(
                         self,
@@ -631,8 +626,7 @@ class PyzoEditor(BaseTextCtrl):
             dlg = QtWidgets.QMessageBox(self)
             dlg.setWindowTitle("File was changed")
             dlg.setText(
-                "File has also been modified outside of the Pyzo editor:\n"
-                + self._filename
+                "File has also been modified outside of the Pyzo editor:\n" + self._filename
             )
             dlg.setInformativeText("Do you want to reload?")
             btnOverwrite = dlg.addButton(
@@ -653,7 +647,7 @@ class PyzoEditor(BaseTextCtrl):
         # Remove whitespace in a single undo-able action
         if (
             self.removeTrailingWS
-            or pyzo.config.settings.removeTrailingWhitespaceWhenSaving
+            or config_for(self).settings.removeTrailingWhitespaceWhenSaving
         ):
             # Original cursor to put state back at the end
             oricursor = self.textCursor()
@@ -951,7 +945,7 @@ class PyzoEditor(BaseTextCtrl):
         fictiveNS = pyzo.parser.getFictiveNameSpace(self)
         fictiveNS = set(fictiveNS)
 
-        snipTool = pyzo.toolManager.getTool("pyzosnippets")
+        snipTool = context_for(self).toolManager.getTool("pyzosnippets")
 
         # Add names
         if not aco.name:
@@ -1004,14 +998,14 @@ class PyzoEditor(BaseTextCtrl):
 
     def _onAutocompleteFinished(self, completionPerformed):
         if completionPerformed:
-            snipTool = pyzo.toolManager.getTool("pyzosnippets")
+            snipTool = context_for(self).toolManager.getTool("pyzosnippets")
             if snipTool:
                 snipTool.applyAutoCompletion(self.textCursor())
 
         super()._onAutocompleteFinished(completionPerformed)
 
     def _onAutocompleteSelectionChanged(self, name):
-        snipTool = pyzo.toolManager.getTool("pyzosnippets")
+        snipTool = context_for(self).toolManager.getTool("pyzosnippets")
         if snipTool:
             fullName = self._getFullAutocompleteName(name)
             if fullName is not None and snipTool.isSnipName(fullName):

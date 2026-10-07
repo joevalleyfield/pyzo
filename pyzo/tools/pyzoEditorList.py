@@ -100,20 +100,31 @@ class PyzoEditorList(QtWidgets.QWidget):
         # Context menu
         self._menu = pyzo.core.menu.EditorTabContextMenu(self, "EditorTabMenu")
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._list.customContextMenuRequested.connect(
-            self._onCustomContextMenuRequested
-        )
+        self._list.customContextMenuRequested.connect(self._onCustomContextMenuRequested)
 
         self._list.middleButtonClicked.connect(self._onMiddleButtonClicked)
         self._list.doubleClicked.connect(self._onDoubleClicked)
         self._list.keyPressed.connect(self._onKeyPressed)
 
-        pyzo.editors._tabs.tabBar().currentChanged.connect(self._onCurrentTabChanged)
-        pyzo.editors._tabs.fileTabsChanged.connect(self._onFileTabsChanged)
+        if getattr(pyzo, "owner", None) is not None:
+            self._list.setDragEnabled(False)  # native panes own their placement
+            pyzo.editors.currentChanged.connect(self.updateList)
+        else:
+            pyzo.editors._tabs.tabBar().currentChanged.connect(self._onCurrentTabChanged)
+            pyzo.editors._tabs.fileTabsChanged.connect(self._onFileTabsChanged)
 
         self.updateList()
 
     def updateList(self):
+        if getattr(pyzo, "owner", None) is not None:
+            self._list.clear()
+            for editor in pyzo.editors:
+                item = QtWidgets.QListWidgetItem(editor._name, self._list)
+                item._editor = editor
+                item.setToolTip(editor.filename or editor._name)
+                if editor is pyzo.editors.getCurrentEditor():
+                    self._list.setCurrentItem(item)
+            return
         tabs = pyzo.editors._tabs
         tabBar = tabs.tabBar()
         # the list widget is not cleared to keep its current scroll bar position
@@ -172,6 +183,11 @@ class PyzoEditorList(QtWidgets.QWidget):
         """Called when context menu is clicked"""
         item = self._list.itemAt(pos)
         if item is not None:
+            if getattr(pyzo, "owner", None) is not None:
+                self._activateLocalItem(item)
+                self._menu.setIndex(0)
+                self._menu.popup(self._list.viewport().mapToGlobal(pos))
+                return
             index = self._list.indexFromItem(item).row()
             self._menu.setIndex(index)
             self._menu.popup(self._list.viewport().mapToGlobal(pos))
@@ -182,6 +198,9 @@ class PyzoEditorList(QtWidgets.QWidget):
             # there was no list entry under the cursor
             pyzo.editors.newFile()
         else:
+            if getattr(pyzo, "owner", None) is not None:
+                self._activateLocalItem(item)
+                return
             # list entry was double clicked
             index = self._list.indexFromItem(item).row()
             pyzo.editors._tabs.setCurrentIndex(index)
@@ -189,10 +208,22 @@ class PyzoEditorList(QtWidgets.QWidget):
     def _onMiddleButtonClicked(self, pos):
         item = self._list.itemAt(pos)
         if item is not None:
+            if getattr(pyzo, "owner", None) is not None:
+                pyzo.editors.closeFile(item._editor)
+                return
             index = self._list.indexFromItem(item).row()
             pyzo.editors._tabs.tabCloseRequested.emit(index)
 
     def _onKeyPressed(self, eventName):
+        if getattr(pyzo, "owner", None) is not None:
+            item = self._list.currentItem()
+            if eventName == "insert":
+                pyzo.editors.newFile()
+            elif item is not None and eventName == "enter":
+                self._activateLocalItem(item)
+            elif item is not None and eventName == "delete":
+                pyzo.editors.closeFile(item._editor)
+            return
         index = self._list.currentRow()
         if index >= 0:
             if eventName == "enter":
@@ -211,3 +242,11 @@ class PyzoEditorList(QtWidgets.QWidget):
                     pyzo.editors._tabs.setCurrentIndex(newIndex)
         if eventName == "insert":
             pyzo.editors.newFile()
+
+    def _activateLocalItem(self, item):
+        group = next(
+            (group for group in pyzo.editors.groups if item._editor in group), None
+        )
+        if group is not None:
+            pyzo.editors.setActiveGroup(group)
+            item._editor.setFocus()

@@ -9,6 +9,7 @@ import sys
 from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
 
 import pyzo
+from pyzo.core.workspaceContext import config_for
 from pyzo.core.pyzoLogging import print
 from pyzo.core.kernelbroker import KernelInfo
 from pyzo import translate
@@ -622,11 +623,11 @@ class ShellInfoDialog(QtWidgets.QDialog):
         self.setMinimumSize(800, 600)
 
         # Add an entry if there's none
-        if not pyzo.config.shellConfigs2:
+        if not config_for(self).shellConfigs2:
             self._addConfig()
 
         # Fill config pages
-        for item in pyzo.config.shellConfigs2:
+        for item in config_for(self).shellConfigs2:
             self._addConfig(item)
 
         self._list.setCurrentRow(0)
@@ -718,7 +719,7 @@ class ShellInfoDialog(QtWidgets.QDialog):
         """Apply changes for all configs."""
 
         # Clear
-        pyzo.config.shellConfigs2 = []
+        config_for(self).shellConfigs2 = []
 
         # Set new versions. Note that although we recreate the list,
         # the list is filled with the orignal structs, so having a
@@ -726,4 +727,4 @@ class ShellInfoDialog(QtWidgets.QDialog):
         # you to keep track of any made changes.
         for i in range(self._list.count()):
             w = self._getPageWidget(self._list.item(i))
-            pyzo.config.shellConfigs2.append(w.getInfo())
+            config_for(self).shellConfigs2.append(w.getInfo())

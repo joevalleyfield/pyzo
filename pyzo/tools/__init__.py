@@ -29,16 +29,42 @@ displayed in the statusbar.
 import os
 import sys
 import importlib.util
+import ast
 
 import pyzo
 from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
 from pyzo.util import zon as ssdf
-from pyzo import translate  # noqa (we have an eval down here)
+from pyzo import translate
 
 try:
     import PySide6QtAds as QtAds
 except ImportError:
     QtAds = None
+
+
+def _metadata_name(source):
+    """Read tool metadata without executing the module or arbitrary code."""
+    try:
+        expression = ast.parse(source, mode="eval").body
+        if isinstance(expression, ast.Call) and not expression.keywords:
+            function = expression.func
+            translator = isinstance(function, ast.Name) and function.id == "translate"
+            translator = translator or (
+                isinstance(function, ast.Attribute)
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "pyzo"
+                and function.attr == "translate"
+            )
+            if not translator:
+                return ""
+            name = translate(
+                *(ast.literal_eval(argument) for argument in expression.args)
+            )
+        else:
+            name = ast.literal_eval(expression)
+        return name if isinstance(name, str) else ""
+    except (ValueError, SyntaxError, TypeError, AttributeError):
+        return ""
 
 
 class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
@@ -106,7 +132,14 @@ class ToolDockWidget(QtAds.CDockWidget if QtAds else QtWidgets.QDockWidget):
     def reload(self, toolClass):
         """Reload the widget with a new widget class."""
         old = self.widget()
-        new = toolClass(self._workspace.widget_parent(self))
+        try:
+            new = toolClass(self._workspace.widget_parent(self))
+        except Exception as error:
+            if not self._workspace.peer_mode:
+                raise
+            new = QtWidgets.QLabel("Tool unavailable: " + str(error), self)
+            new.setWordWrap(True)
+            new.setAccessibleDescription(str(error))
         self.setWidget(new)
         if old:
             old.close()
@@ -139,10 +172,10 @@ class ToolDescription:
             return bool(self.instance)
             # return self.id in pyzo.toolManager._activeTools
         elif value:
-            pyzo.toolManager.loadTool(self.id)
+            getattr(self, "_manager", pyzo.toolManager).loadTool(self.id)
         else:
             self.widget = None
-            pyzo.toolManager.closeTool(self.id)
+            getattr(self, "_manager", pyzo.toolManager).closeTool(self.id)
 
 
 class ToolManager(QtCore.QObject):
@@ -218,7 +251,7 @@ class ToolManager(QtCore.QObject):
                             continue
                         line = line.rstrip("\n").rstrip("\r")
                         line = line[i + 1 :].strip(" ")
-                        toolName = eval(line)  # applies translation
+                        toolName = _metadata_name(line)
                     elif line.startswith("tool_summary"):
                         i = line.find("=")
                         if i < 0:
@@ -231,6 +264,7 @@ class ToolManager(QtCore.QObject):
 
             # Add stuff
             tmp = ToolDescription(modulePath, toolName, toolSummary)
+            tmp._manager = self
             newlist.append(tmp)
 
         # Store and return
@@ -334,6 +368,8 @@ class ToolManager(QtCore.QObject):
             dock = self._activeTools[toolId]
             dock.setWidget(QtWidgets.QWidget(self._workspace.widget_parent(dock)))
             if old:
+                if hasattr(old, "cleanUp"):
+                    old.cleanUp()
                 old.close()
                 old.deleteLater()
 
@@ -356,11 +392,18 @@ class ToolManager(QtCore.QObject):
             name = toolId
 
         # Make sure there is a config entry for this tool
-        if not hasattr(pyzo.config.tools, toolId):
-            pyzo.config.tools[toolId] = ssdf.new()
+        from pyzo.core.workspaceContext import config_for
+
+        configuration = (
+            config_for(self) if hasattr(self._workspace, "context_owner") else pyzo.config
+        )
+        if not hasattr(configuration.tools, toolId):
+            configuration.tools[toolId] = ssdf.new()
 
         # Create dock widget and add in the main window
         dock = ToolDockWidget(self._workspace, self)
+        if hasattr(self._workspace, "context_owner"):
+            dock._workspaceContextOwner = self._workspace.context_owner
         dock.setTool(toolId, name, toolClass)
 
         otherDock = self._activeTools.get(splitWith) if splitWith else None

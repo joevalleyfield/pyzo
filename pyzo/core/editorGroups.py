@@ -189,12 +189,15 @@ class EditorGroupManager(QtCore.QObject):
     def saveEditorState(self) -> None:
         if self._activeGroup is None:
             return
+        from pyzo.core.workspaceContext import config_for
+
         fr = self._activeGroup._findReplace
-        pyzo.config.state.find_matchCase = fr._caseCheck.isChecked()
-        pyzo.config.state.find_regExp = fr._regExp.isChecked()
-        pyzo.config.state.find_wholeWord = fr._wholeWord.isChecked()
-        pyzo.config.state.find_autoHide = fr._autoHide.isChecked()
-        pyzo.config.state.find_show = fr.isVisible()
+        configuration = config_for(self._activeGroup)
+        configuration.state.find_matchCase = fr._caseCheck.isChecked()
+        configuration.state.find_regExp = fr._regExp.isChecked()
+        configuration.state.find_wholeWord = fr._wholeWord.isChecked()
+        configuration.state.find_autoHide = fr._autoHide.isChecked()
+        configuration.state.find_show = fr.isVisible()
         state = []
         for group in self._groups:
             state.extend(group._getCurrentOpenFilesAsSsdfList())

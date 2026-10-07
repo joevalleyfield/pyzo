@@ -7,6 +7,7 @@ Functionality for logging in pyzo.
 import os
 import sys
 import time
+import weakref
 import pyzo
 
 # todo: enable logging to a file?
@@ -73,13 +74,29 @@ def splitConsole(stdoutFun=None, stderrFun=None):
     sys.stderr._history = sys.stdout._history
 
     # Set defer functions
+    def reference(callback):
+        try:
+            return weakref.WeakMethod(callback)
+        except TypeError:
+            return lambda: callback
+
     if stdoutFun:
-        sys.stdout._deferFunction = stdoutFun
+        sys.stdout._deferFunctions.append(reference(stdoutFun))
     if stderrFun:
-        sys.stderr._deferFunction = stderrFun
+        sys.stderr._deferFunctions.append(reference(stderrFun))
 
     # Return history
     return "".join(sys.stdout._history)
+
+
+def unsplitConsole(stdoutFun, stderrFun):
+    for stream, callback in ((sys.stdout, stdoutFun), (sys.stderr, stderrFun)):
+        if isinstance(stream, OutputStreamSplitter):
+            stream._deferFunctions[:] = [
+                reference
+                for reference in stream._deferFunctions
+                if reference() is not None and reference() != callback
+            ]
 
 
 class OutputStreamSplitter:
@@ -94,11 +111,11 @@ class OutputStreamSplitter:
         if isinstance(fileObject, OutputStreamSplitter):
             self._original = fileObject._original
             self._history = fileObject._history
-            self._deferFunction = fileObject._deferFunction
+            self._deferFunctions = fileObject._deferFunctions
         else:
             self._original = fileObject
             self._history = []
-            self._deferFunction = self.dummyDeferFunction
+            self._deferFunctions = []
 
         # Replace original with a dummy if None
         if self._original is None:
@@ -114,10 +131,15 @@ class OutputStreamSplitter:
         if os.getenv("PYZO_LOG", ""):
             with open(os.getenv("PYZO_LOG"), "at") as f:
                 f.write(text)
-        try:
-            self._deferFunction(text)
-        except Exception:
-            pass  # self._original.write("error writing to deferred stream")
+        for reference in tuple(self._deferFunctions):
+            callback = reference()
+            if callback is None:
+                self._deferFunctions.remove(reference)
+                continue
+            try:
+                callback(text)
+            except Exception:
+                self._deferFunctions.remove(reference)
         # Show in statusbar
         if pyzo.config.view.showStatusbar and len(text) > 1:
             if pyzo.metadata:

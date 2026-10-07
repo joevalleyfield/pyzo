@@ -19,6 +19,7 @@ import json
 from pyzo.qt import QtCore, QtGui, QtWidgets
 
 import pyzo
+from pyzo.core.workspaceContext import config_for, context_for
 from pyzo.core.compactTabWidget import CompactTabWidget
 from pyzo.core.themeEdit import EditColorDialog
 from pyzo.core.pyzoLogging import print  # noqa
@@ -26,10 +27,29 @@ from pyzo import translate
 
 from pyzo.core.pdfExport import PdfExport
 
+
+def show_workspace_capabilities(widget):
+    context = context_for(widget)
+    values = context.service.capabilities(context.owner)
+    lines = [
+        f"{path}: requested {value['requested']!r}; effective {value['effective']!r} ({value['scope']})"
+        for path, value in values.items()
+    ]
+    QtWidgets.QMessageBox.information(
+        widget, "Workspace effective settings", "\n".join(lines)
+    )
+
 def buildMenus(menuBar):
     """
     Build all the menus
     """
+    service = getattr(pyzo, "workspaceContext", None)
+    if service is not None and menuBar.parent() is not None:
+        for owner in service.main._peerRuntimeCatalog.identities:
+            runtime = service.main._peerRuntimeCatalog.runtime(owner)
+            if menuBar.parent() in runtime.frame_windows.values():
+                menuBar._workspaceContextOwner = owner
+                break
     menus = [
         FileMenu(menuBar, translate("menu", "File")),
         EditMenu(menuBar, translate("menu", "Edit")),
@@ -357,15 +377,16 @@ class Menu(QtWidgets.QMenu):
         return a
 
     def setCheckedOption(self, group, value):
-        """Set the selected value of a group. This will also activate the
-        callback function of the item that gets selected.
+        """Synchronize selection without dispatching a user setting change.
         if group is None the default group is used.
         """
         if group is None:
             group = "default"
         actionGroup, actions = self._groups[group]
         if value in actions:
+            blockers = [QtCore.QSignalBlocker(action) for action in actions.values()]
             actions[value].setChecked(True)
+            del blockers
 
 
 class GeneralOptionsMenu(Menu):
@@ -435,12 +456,12 @@ class IndentationMenu(Menu):
         ]
 
     def _setWidth(self, width):
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if editor is not None:
             editor.setIndentWidth(width)
 
     def _setStyle(self, style):
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if editor is not None:
             editor.setIndentUsingSpaces(style)
 
@@ -452,17 +473,13 @@ class FileMenu(Menu):
         self._items = []
 
         # Create indent menu
-        t = translate(
-            "menu", "Indentation ::: The indentation used of the current file."
-        )
+        t = translate("menu", "Indentation ::: The indentation used of the current file.")
         self._indentMenu = IndentationMenu(self, t)
 
         # Create parser menu
         from pyzo import codeeditor
 
-        t = translate(
-            "menu", "Syntax parser ::: The syntax parser of the current file."
-        )
+        t = translate("menu", "Syntax parser ::: The syntax parser of the current file.")
         self._parserMenu = GeneralOptionsMenu(self, t, self._setParser)
         self._parserMenu.setOptions(["Plain"] + codeeditor.Manager.getParserNames())
 
@@ -474,27 +491,32 @@ class FileMenu(Menu):
         self._lineEndingMenu.setOptions(["LF", "CR", "CRLF"])
 
         # Bind to signal
-        pyzo.editors.currentChanged.connect(self.onEditorsCurrentChanged)
+        context_for(self).editors.currentChanged.connect(self.onEditorsCurrentChanged)
 
         # Build menu file management stuff
         self.addItem(
             translate("menu", "New ::: Create a new (or temporary) file."),
             icons.page_add,
-            pyzo.editors.newFile,
+            context_for(self).editors.newFile,
         )
         self.addItem(
             translate("menu", "Open... ::: Open an existing file from disk."),
             icons.folder_page,
-            pyzo.editors.openFile,
+            context_for(self).editors.openFile,
         )
         if self.parent().property("applicationCommandProjection"):
             self.addItem(
-                translate("menu", "Reopen retained buffer... ::: Reopen a closed peer buffer."),
+                translate(
+                    "menu", "Reopen retained buffer... ::: Reopen a closed peer buffer."
+                ),
                 icons.folder_page,
                 pyzo.main.reopen_retained_buffer,
             )
             self.addItem(
-                translate("menu", "Recover legacy buffer... ::: Choose a preserved buffer version."),
+                translate(
+                    "menu",
+                    "Recover legacy buffer... ::: Choose a preserved buffer version.",
+                ),
                 icons.folder_page,
                 pyzo.main.resolve_legacy_recovery,
             )
@@ -505,19 +527,19 @@ class FileMenu(Menu):
                     "menu", "Reload from disk ::: Reload the current file from disk."
                 ),
                 icons.reload_file_from_disk,
-                pyzo.editors.reloadFile,
+                context_for(self).editors.reloadFile,
             ),
             self.addItem(
                 translate("menu", "Save ::: Save the current file to disk."),
                 icons.disk,
-                pyzo.editors.saveFile,
+                context_for(self).editors.saveFile,
             ),
             self.addItem(
                 translate(
                     "menu", "Save as... ::: Save the current file under another name."
                 ),
                 icons.disk_as,
-                pyzo.editors.saveFileAs,
+                context_for(self).editors.saveFileAs,
             ),
             self.addItem(
                 translate(
@@ -525,22 +547,22 @@ class FileMenu(Menu):
                     "Save a copy as... ::: Create a backup of the current editor's contents.",
                 ),
                 icons.save_copy_as,
-                lambda: pyzo.editors.saveFileAs(saveCopyAs=True),
+                lambda: context_for(self).editors.saveFileAs(saveCopyAs=True),
             ),
             self.addItem(
                 translate("menu", "Save all ::: Save all open files."),
                 icons.disk_multiple,
-                pyzo.editors.saveAllFiles,
+                context_for(self).editors.saveAllFiles,
             ),
             self.addItem(
                 translate("menu", "Close ::: Close the current file."),
                 icons.page_delete,
-                pyzo.editors.closeFile,
+                context_for(self).editors.closeFile,
             ),
             self.addItem(
                 translate("menu", "Close all ::: Close all files."),
                 icons.page_delete_all,
-                pyzo.editors.closeAllFiles,
+                context_for(self).editors.closeAllFiles,
             ),
             self.addItem(
                 translate(
@@ -584,7 +606,7 @@ class FileMenu(Menu):
             child.setEnabled(enabled)
 
     def onEditorsCurrentChanged(self):
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if editor is None:
             self.setEnabled(False)  # Disable / uncheck all editor-related options
         else:
@@ -601,14 +623,14 @@ class FileMenu(Menu):
             self._lineEndingMenu.setCheckedOption(None, editor.lineEndingsHumanReadable)
 
     def _setParser(self, value):
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if value.lower() == "plain":
             value = None
         if editor is not None:
             editor.setParser(value)
 
     def _setLineEndings(self, value):
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         editor.lineEndings = value
 
     def _pdfExport(self):
@@ -693,9 +715,7 @@ class EditMenu(Menu):
             "uncommentCode",
         )
         self.addItem(
-            translate(
-                "menu", "Toggle Comment ::: Toggle comment for the selected line."
-            ),
+            translate("menu", "Toggle Comment ::: Toggle comment for the selected line."),
             None,
             self._editItemCallback,
             "toggleCommentCode",
@@ -770,7 +790,7 @@ class EditMenu(Menu):
                 "Find or replace ::: Show find/replace widget. Initialize with selected text.",
             ),
             icons.find,
-            pyzo.editors._findReplace.startFind,
+            context_for(self).editors._findReplace.startFind,
         )
         self.addItem(
             translate(
@@ -778,7 +798,7 @@ class EditMenu(Menu):
                 "Find selection ::: Find the next occurrence of the selected text.",
             ),
             None,
-            pyzo.editors._findReplace.findSelection,
+            context_for(self).editors._findReplace.findSelection,
         )
         self.addItem(
             translate(
@@ -786,14 +806,14 @@ class EditMenu(Menu):
                 "Find selection backward ::: Find the previous occurrence of the selected text.",
             ),
             None,
-            pyzo.editors._findReplace.findSelectionBw,
+            context_for(self).editors._findReplace.findSelectionBw,
         )
         self.addItem(
             translate(
                 "menu", "Find next ::: Find the next occurrence of the search string."
             ),
             None,
-            pyzo.editors._findReplace.findNext,
+            context_for(self).editors._findReplace.findNext,
         )
         self.addItem(
             translate(
@@ -801,7 +821,7 @@ class EditMenu(Menu):
                 "Find previous ::: Find the previous occurrence of the search string.",
             ),
             None,
-            pyzo.editors._findReplace.findPrevious,
+            context_for(self).editors._findReplace.findPrevious,
         )
         self.addItem(
             translate(
@@ -819,18 +839,18 @@ class EditMenu(Menu):
             getattr(widget, action)()
 
     def _findViaFilebrowserCallback(self):
-        fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+        fileBrowser = context_for(self).toolManager.getTool("pyzofilebrowser")
         if fileBrowser is not None:
             textWidgets = [
-                pyzo.editors.getCurrentEditor(),
-                pyzo.shells.getCurrentShell(),
+                context_for(self).editors.getCurrentEditor(),
+                context_for(self).shells.getCurrentShell(),
             ]
 
-            t = pyzo.toolManager.getTool("pyzologger")
+            t = context_for(self).toolManager.getTool("pyzologger")
             if t:
                 textWidgets.append(t._logger_shell)
 
-            t = pyzo.toolManager.getTool("pyzointeractivehelp")
+            t = context_for(self).toolManager.getTool("pyzointeractivehelp")
             if t:
                 textWidgets.append(t._browser)
 
@@ -856,15 +876,15 @@ class ZoomMenu(Menu):
 
     def _setZoom(self, value):
         if not value:
-            pyzo.config.view.zoom = 0
+            config_for(self).view.zoom = 0
         else:
-            pyzo.config.view.zoom += value
+            config_for(self).view.zoom += value
         # Apply
-        for editor in pyzo.editors:
-            pyzo.config.view.zoom = editor.setZoom(pyzo.config.view.zoom)
-        for shell in pyzo.shells:
-            pyzo.config.view.zoom = shell.setZoom(pyzo.config.view.zoom)
-        logger = pyzo.toolManager.getTool("pyzologger")
+        for editor in context_for(self).editors:
+            config_for(self).view.zoom = editor.setZoom(config_for(self).view.zoom)
+        for shell in context_for(self).shells:
+            config_for(self).view.zoom = shell.setZoom(config_for(self).view.zoom)
+        logger = context_for(self).toolManager.getTool("pyzologger")
         if logger:
             logger.updateZoom()
 
@@ -886,16 +906,16 @@ class FontMenu(Menu):
             txt = name + default_suffix if name == defaultName else name
             self.addGroupItem(txt, None, self._selectFont, value=name)
         # Select the current one
-        self.setCheckedOption(None, pyzo.config.view.fontname)
+        self.setCheckedOption(None, config_for(self).view.fontname)
 
     def _selectFont(self, name):
-        pyzo.config.view.fontname = name
+        config_for(self).view.fontname = name
         # Apply
-        for editor in pyzo.editors:
-            editor.setFont(pyzo.config.view.fontname)
-        for shell in pyzo.shells:
-            shell.setFont(pyzo.config.view.fontname)
-        logger = pyzo.toolManager.getTool("pyzologger")
+        for editor in context_for(self).editors:
+            editor.setFont(config_for(self).view.fontname)
+        for shell in context_for(self).shells:
+            shell.setFont(config_for(self).view.fontname)
+        logger = context_for(self).toolManager.getTool("pyzologger")
         if logger:
             logger.updateFont()
 
@@ -916,7 +936,7 @@ class ViewMenu(Menu):
         values = [0] + list(range(60, 130, 10))
         names = [translate("menu", "None")] + [str(i) for i in values[1:]]
         self._edgeColumMenu.setOptions(names, values)
-        self._edgeColumMenu.setCheckedOption(None, pyzo.config.view.edgeColumn)
+        self._edgeColumMenu.setCheckedOption(None, config_for(self).view.edgeColumn)
 
         # Create qt theme menu
         t = translate("menu", "Qt theme ::: The styling of the user interface widgets.")
@@ -929,20 +949,16 @@ class ViewMenu(Menu):
             if titles[i].lower() == pyzo.defaultQtStyleName.lower():
                 titles[i] += " ({})".format(translate("menu", "default"))
         self._qtThemeMenu.setOptions(titles, styleNames)
-        self._qtThemeMenu.setCheckedOption(None, pyzo.config.view.qtstyle.lower())
+        self._qtThemeMenu.setCheckedOption(None, config_for(self).view.qtstyle.lower())
 
         # Build menu
         self.addItem(
-            translate(
-                "menu", "Select shell ::: Focus the cursor on the current shell."
-            ),
+            translate("menu", "Select shell ::: Focus the cursor on the current shell."),
             icons.application_shell,
             self._selectShell,
         )
         self.addItem(
-            translate(
-                "menu", "Select editor ::: Focus the cursor on the current editor."
-            ),
+            translate("menu", "Select editor ::: Focus the cursor on the current editor."),
             icons.application_edit,
             self._selectEditor,
         )
@@ -952,7 +968,7 @@ class ViewMenu(Menu):
                 "Move editor to next area ::: Move the current document to the next editor area.",
             ),
             icons.application_edit,
-            pyzo.editors.moveCurrentEditorToNextGroup,
+            context_for(self).editors.moveCurrentEditorToNextGroup,
         )
         self.addSeparator()
         pyzo.core.views.ViewManagerDialog.registerMenuAction(
@@ -991,7 +1007,7 @@ class ViewMenu(Menu):
                 None,
                 self._setStatusBar,
                 None,
-                pyzo.config.view.showStatusbar,
+                config_for(self).view.showStatusbar,
             )
         self.addSeparator()
         self.addEditorItem(
@@ -1039,9 +1055,7 @@ class ViewMenu(Menu):
             self._previousTopLevelObject,
         )
         self.addItem(
-            translate(
-                "menu", "Next object ::: Advance to the next top-level structure."
-            ),
+            translate("menu", "Next object ::: Advance to the next top-level structure."),
             None,
             self._nextTopLevelObject,
         )
@@ -1055,8 +1069,8 @@ class ViewMenu(Menu):
         """Create a boolean item that represents a property of the editors,
         whose value is stored in pyzo.config.view.param
         """
-        if hasattr(pyzo.config.view, param):
-            default = getattr(pyzo.config.view, param)
+        if hasattr(config_for(self).view, param):
+            default = getattr(config_for(self).view, param)
         else:
             default = True
 
@@ -1073,25 +1087,25 @@ class ViewMenu(Menu):
         Callback for addEditorItem items
         """
         # Store this parameter in the config
-        setattr(pyzo.config.view, param, state)
+        setattr(config_for(self).view, param, state)
         # Apply to all editors, translate e.g. showWhitespace to setShowWhitespace
         setter = "set" + param[0].upper() + param[1:]
-        codeEditorList = list(pyzo.editors)
+        codeEditorList = list(context_for(self).editors)
         if shellsToo:
-            codeEditorList.extend(pyzo.shells)
-            logger = pyzo.toolManager.getTool("pyzologger")
+            codeEditorList.extend(context_for(self).shells)
+            logger = context_for(self).toolManager.getTool("pyzologger")
             if logger is not None:
                 codeEditorList.append(logger._logger_shell)
         for editor in codeEditorList:
             getattr(editor, setter)(state)
 
     def _selectShell(self):
-        shell = pyzo.shells.getCurrentShell()
+        shell = context_for(self).shells.getCurrentShell()
         if shell:
             shell.setFocus()
 
     def _selectEditor(self):
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if editor:
             editor.setFocus()
 
@@ -1105,12 +1119,15 @@ class ViewMenu(Menu):
         d.exec()
 
     def _setEdgeColumn(self, value):
-        pyzo.config.view.edgeColumn = value
-        for editor in pyzo.editors:
+        config_for(self).view.edgeColumn = value
+        for editor in context_for(self).editors:
             editor.setLongLineIndicatorPosition(value)
 
     def _setQtTheme(self, value):
-        pyzo.config.view.qtstyle = value
+        config_for(self).view.qtstyle = value
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            self._showWorkspaceCapabilities()
+            return
         if pyzo.application is not None:
             pyzo.application.appearance.set_style(value)
         else:
@@ -1118,11 +1135,17 @@ class ViewMenu(Menu):
 
     def _setStatusBar(self, value):
         """Show or hide status bar."""
-        pyzo.config.view.showStatusbar = value
+        config_for(self).view.showStatusbar = value
         if pyzo.application is not None:
-            pyzo.application.status.service.setVisible(value)
+            if getattr(pyzo, "workspaceContext", None) is not None:
+                pyzo.workspaceContext.main._peerStatusProjector.refresh()
+            else:
+                pyzo.application.status.service.setVisible(value)
         else:
             pyzo.main.statusBar().setVisible(value)
+
+    def _showWorkspaceCapabilities(self):
+        show_workspace_capabilities(self)
 
     def _previousCell(self):
         """Rewind the cursor to the previous cell (starting with '##')."""
@@ -1134,7 +1157,7 @@ class ViewMenu(Menu):
 
     def _previousTopLevelObject(self, type=None):
         # Get editor
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if not editor:
             return
 
@@ -1174,7 +1197,7 @@ class ViewMenu(Menu):
 
     def _nextTopLevelObject(self, type=None):
         # Get editor
-        editor = pyzo.editors.getCurrentEditor()
+        editor = context_for(self).editors.getCurrentEditor()
         if not editor:
             return
 
@@ -1232,8 +1255,8 @@ class ShellMenu(Menu):
         self._shellCreateActions = []
         self._shellActions = []
         super().__init__(parent, name)
-        pyzo.shells.currentShellChanged.connect(self.onCurrentShellChanged)
-        pyzo.shells.executionShellChanged.connect(self._updateExecutionTarget)
+        context_for(self).shells.currentShellChanged.connect(self.onCurrentShellChanged)
+        context_for(self).shells.executionShellChanged.connect(self._updateExecutionTarget)
         self.aboutToShow.connect(self._updateShells)
         self.aboutToShow.connect(self._updateExecutionTarget)
         self._updateExecutionTarget()
@@ -1266,7 +1289,12 @@ class ShellMenu(Menu):
         """Returns the shell on which to apply the menu actions. Default is
         the current shell, this is overridden in the shell/shell tab context
         menus"""
-        return pyzo.shells.getCurrentShell()
+        shells = context_for(self).shells
+        return (
+            shells.getSelectedShell()
+            if hasattr(shells, "getSelectedShell")
+            else shells.getCurrentShell()
+        )
 
     def _updateExecutionTarget(self):
         action = getattr(self, "_executionTargetAction", None)
@@ -1275,9 +1303,9 @@ class ShellMenu(Menu):
         from pyzo.core.shellStack import shellTitle
 
         shell = (
-            pyzo.shells.getCurrentShell()
+            context_for(self).shells.getCurrentShell()
             if getattr(pyzo.application, "workspace_debugging", None)
-            else pyzo.shells.getExecutionShell()
+            else context_for(self).shells.getExecutionShell()
         )
         target = shellTitle(shell) if shell is not None else "None"
         prefix = (
@@ -1336,21 +1364,19 @@ class ShellMenu(Menu):
             self.removeAction(action)
 
         self._shellCreateActions = []
-        for i, config in enumerate(pyzo.config.shellConfigs2):
+        for i, config in enumerate(config_for(self).shellConfigs2):
             name = translate("menu", "Create shell {}: ({})").format(i + 1, config.name)
             action = self.addItem(
-                name, pyzo.icons.application_add, pyzo.shells.addShell, config
+                name, pyzo.icons.application_add, context_for(self).shells.addShell, config
             )
             self._shellCreateActions.append(action)
 
     def _updateDebugButtons(self):
         # Count breakpoints
         bpcount = 0
-        for e in pyzo.editors:
+        for e in context_for(self).editors:
             bpcount += len(e.breakPoints())
-        debugging = getattr(
-            getattr(pyzo, "application", None), "workspace_debugging", None
-        )
+        debugging = getattr(getattr(pyzo, "application", None), "workspace_debugging", None)
         self._brokenBreakpointMenu.clear()
         if debugging is not None:
             owner = pyzo.application.workspaces.active_identity
@@ -1378,7 +1404,7 @@ class ShellMenu(Menu):
         """Edit, add and remove configurations for the shells."""
         from pyzo.core.shellInfoDialog import ShellInfoDialog
 
-        d = ShellInfoDialog()
+        d = ShellInfoDialog(self)
         d.exec()
 
 
@@ -1409,10 +1435,10 @@ class ShellButtonMenu(ShellMenu):
             self._newShellMenu.removeAction(action)
 
         self._shellCreateActions = []
-        for i, config in enumerate(pyzo.config.shellConfigs2):
+        for i, config in enumerate(config_for(self).shellConfigs2):
             name = translate("menu", "Create shell {}: ({})").format(i + 1, config.name)
             action = self._newShellMenu.addItem(
-                name, pyzo.icons.application_add, pyzo.shells.addShell, config
+                name, pyzo.icons.application_add, context_for(self).shells.addShell, config
             )
             self._shellCreateActions.append(action)
 
@@ -1503,7 +1529,7 @@ class ShellContextMenu(ShellMenu):
         return self._shell
 
     def _useAsExecutionTarget(self):
-        pyzo.shells.setExecutionShell(self._shell)
+        context_for(self).shells.setExecutionShell(self._shell)
 
     def _editItemCallback(self, action):
         msg = ""
@@ -1515,21 +1541,19 @@ class ShellContextMenu(ShellMenu):
                     "menu", "Could not determine the current working directory."
                 )
             else:
-                fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+                fileBrowser = context_for(self).toolManager.getTool("pyzofilebrowser")
                 if curdir and fileBrowser:
                     fileBrowser.setPath(curdir)
         elif action == "changedir":
-            fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+            fileBrowser = context_for(self).toolManager.getTool("pyzofilebrowser")
             if fileBrowser:
                 self._shell.executeCommand("cd " + fileBrowser.path() + "\n")
         elif action == "changedirtoeditor":
-            editor = pyzo.editors.getCurrentEditor()
+            editor = context_for(self).editors.getCurrentEditor()
             if editor is None:
                 msg = translate("menu", "No editor selected.")
             else:
-                self._shell.executeCommand(
-                    "cd " + os.path.dirname(editor.filename) + "\n"
-                )
+                self._shell.executeCommand("cd " + os.path.dirname(editor.filename) + "\n")
         elif action == "helpOnText":
             self._shell.helpOnText(self._pos)
         else:
@@ -1640,9 +1664,7 @@ class EditorContextMenu(Menu):
             "uncommentCode",
         )
         self.addItem(
-            translate(
-                "menu", "Toggle Comment ::: Toggle comment for the selected line."
-            ),
+            translate("menu", "Toggle Comment ::: Toggle comment for the selected line."),
             None,
             self._editItemCallback,
             "toggleCommentCode",
@@ -1658,9 +1680,7 @@ class EditorContextMenu(Menu):
         )
         self.addSeparator()
         self.addItem(
-            translate(
-                "menu", "Goto Definition ::: Go to definition of word under cursor."
-            ),
+            translate("menu", "Goto Definition ::: Go to definition of word under cursor."),
             icons.debug_return,
             self._editItemCallback,
             "gotoDef",
@@ -1678,7 +1698,7 @@ class EditorContextMenu(Menu):
                 "Find or replace ::: Show find/replace widget. Initialize with selected text.",
             ),
             icons.find,
-            pyzo.editors._findReplace.startFind,
+            context_for(self).editors._findReplace.startFind,
         )
         self.addItem(
             translate(
@@ -1686,7 +1706,7 @@ class EditorContextMenu(Menu):
                 "Find selection ::: Find the next occurrence of the selected text.",
             ),
             None,
-            pyzo.editors._findReplace.findSelection,
+            context_for(self).editors._findReplace.findSelection,
         )
         self.addItem(
             translate(
@@ -1694,7 +1714,7 @@ class EditorContextMenu(Menu):
                 "Find selection backward ::: Find the previous occurrence of the selected text.",
             ),
             None,
-            pyzo.editors._findReplace.findSelectionBw,
+            context_for(self).editors._findReplace.findSelectionBw,
         )
 
         # This is a subset of the run menu. Copied manually.
@@ -1711,7 +1731,7 @@ class EditorContextMenu(Menu):
     def _editItemCallback(self, action):
         # If the widget has a 'name' attribute, call it
         if action == "opendir":
-            fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+            fileBrowser = context_for(self).toolManager.getTool("pyzofilebrowser")
             if fileBrowser:
                 fileBrowser.setPath(os.path.dirname(self._editor.filename))
         elif action == "helpOnText":
@@ -1837,28 +1857,28 @@ class EditorTabContextMenu(Menu):
     def _fileAction(self, action):
         """Call the method specified by 'action' on the selected shell"""
 
-        item = pyzo.editors._tabs.getItemAt(self._index)
+        item = context_for(self).editors._tabs.getItemAt(self._index)
 
         if action in ["saveFile", "saveFileAs", "closeFile"]:
-            getattr(pyzo.editors, action)(item.editor)
+            getattr(context_for(self).editors, action)(item.editor)
 
         elif action in ("close_others", "close_all", "close_all_after_this"):
-            numTabs = pyzo.editors._tabs.count()
+            numTabs = context_for(self).editors._tabs.count()
             indsToClose = list(range(numTabs))
             if action == "close_others":
                 indsToClose = [i for i in range(numTabs) if i != self._index]
             elif action == "close_all_after_this":
                 indsToClose = list(range(self._index + 1, numTabs))
 
-            items = pyzo.editors._tabs.items()
+            items = context_for(self).editors._tabs.items()
             for i in sorted(indsToClose, reverse=True):
                 if items[i].pinned:
                     continue
-                pyzo.editors._tabs.tabCloseRequested.emit(i)
+                context_for(self).editors._tabs.tabCloseRequested.emit(i)
 
         elif action == "rename":
             filename = item.filename
-            pyzo.editors.saveFileAs(item.editor)
+            context_for(self).editors.saveFileAs(item.editor)
             if item.filename != filename:
                 try:
                     os.remove(filename)
@@ -1868,7 +1888,7 @@ class EditorTabContextMenu(Menu):
             filename = item.filename
             QtWidgets.qApp.clipboard().setText(filename)
         elif action == "opendir":
-            fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+            fileBrowser = context_for(self).toolManager.getTool("pyzofilebrowser")
             if fileBrowser:
                 fileBrowser.setPath(os.path.dirname(item.filename))
         elif action == "open_dir_outside_pyzo":
@@ -1882,22 +1902,22 @@ class EditorTabContextMenu(Menu):
         elif action == "main":
             if getattr(pyzo.application, "workspace_execution", None) is not None:
                 pyzo.runCommands.toggle_main(item.editor)
-            elif pyzo.editors._tabs._mainFile == item.id:
-                pyzo.editors._tabs._mainFile = None
+            elif context_for(self).editors._tabs._mainFile == item.id:
+                context_for(self).editors._tabs._mainFile = None
             else:
-                pyzo.editors._tabs._mainFile = item.id
+                context_for(self).editors._tabs._mainFile = item.id
         elif action == "run":
             pyzo.runCommands.run_file((False, False), item.editor)
         elif action == "run_script":
             pyzo.runCommands.run_file((True, False), item.editor)
 
-        pyzo.editors._tabs.updateItems()
+        context_for(self).editors._tabs.updateItems()
 
 
 class RunMenu(Menu):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        pyzo.shells.executionShellChanged.connect(self._updateExecutionTarget)
+        context_for(self).shells.executionShellChanged.connect(self._updateExecutionTarget)
         self.aboutToShow.connect(self._updateExecutionTarget)
         self._updateExecutionTarget()
 
@@ -1911,7 +1931,7 @@ class RunMenu(Menu):
         self._selectionTargetMenu = SelectionTargetMenu(
             self,
             service=lambda: getattr(pyzo.application, "workspace_execution", None),
-            current_editor=lambda: pyzo.editors.getCurrentEditor(),
+            current_editor=lambda: context_for(self).editors.getCurrentEditor(),
         )
         self.addMenu(self._selectionTargetMenu)
         self.addSeparator()
@@ -2008,7 +2028,7 @@ class RunMenu(Menu):
             None,
             self._cdonfileexec,
             None,
-            pyzo.config.settings.changeDirOnFileExec,
+            config_for(self).settings.changeDirOnFileExec,
         )
         self.addItem(
             translate(
@@ -2020,12 +2040,12 @@ class RunMenu(Menu):
         )
 
     def _cdonfileexec(self, value):
-        pyzo.config.settings.changeDirOnFileExec = bool(value)
+        config_for(self).settings.changeDirOnFileExec = bool(value)
 
     def _updateExecutionTarget(self):
         from pyzo.core.shellStack import shellTitle
 
-        shell = pyzo.shells.getExecutionShell()
+        shell = context_for(self).shells.getExecutionShell()
         target = shellTitle(shell) if shell is not None else "None"
         peer_selection = getattr(pyzo.application, "workspace_execution", None)
         self._executionTargetAction.setVisible(peer_selection is None)
@@ -2049,12 +2069,12 @@ class ToolsMenu(Menu):
         self.addItem(
             translate("menu", "Reload tools ::: For people who develop tools."),
             pyzo.icons.plugin_refresh,
-            pyzo.toolManager.reloadTools,
+            context_for(self).toolManager.reloadTools,
         )
         self.addSeparator()
 
         self.onToolInstanceChange()  # Build initial menu
-        pyzo.toolManager.toolInstanceChange.connect(self.onToolInstanceChange)
+        context_for(self).toolManager.toolInstanceChange.connect(self.onToolInstanceChange)
 
     def onToolInstanceChange(self):
         # Remove all exisiting tools from the menu
@@ -2063,7 +2083,7 @@ class ToolsMenu(Menu):
 
         # Add all tools, with checkmarks for those that are active
         self._toolActions = []
-        for tool in pyzo.toolManager.getToolInfo():
+        for tool in context_for(self).toolManager.getToolInfo():
             action = self.addCheckItem(
                 tool.name,
                 pyzo.icons.plugin,
@@ -2188,7 +2208,7 @@ class AutocompMenu(Menu):
         ]
         for value, mode in enumerate(modes):
             self.addGroupItem(mode, None, self._setMode, value, group="mode")
-        self.setCheckedOption("mode", pyzo.config.settings.autoComplete)
+        self.setCheckedOption("mode", config_for(self).settings.autoComplete)
 
         self.addSeparator()
 
@@ -2210,7 +2230,7 @@ class AutocompMenu(Menu):
                 group="acceptkeys",
             )
         self.setCheckedOption(
-            "acceptkeys", pyzo.config.settings.autoComplete_acceptKeys
+            "acceptkeys", config_for(self).settings.autoComplete_acceptKeys
         )
 
         self.addSeparator()
@@ -2224,20 +2244,18 @@ class AutocompMenu(Menu):
             None,
             self._setCompleteKeywords,
             None,
-            pyzo.config.settings.autoComplete_keywords,
+            config_for(self).settings.autoComplete_keywords,
         )
 
         self.addSeparator()
 
         # auto closing options
         self.addCheckItem(
-            translate(
-                "menu", "Auto close quotes ::: Auto close single and double quotes."
-            ),
+            translate("menu", "Auto close quotes ::: Auto close single and double quotes."),
             None,
             self._configEditor,
             "autoClose_Quotes",
-            pyzo.config.settings.autoClose_Quotes,
+            config_for(self).settings.autoClose_Quotes,
         )
 
         self.addCheckItem(
@@ -2245,35 +2263,35 @@ class AutocompMenu(Menu):
             None,
             self._configEditor,
             "autoClose_Brackets",
-            pyzo.config.settings.autoClose_Brackets,
+            config_for(self).settings.autoClose_Brackets,
         )
 
     def _setAcceptKeys(self, autocompkeys):
         # Skip if setting is not changes
-        if pyzo.config.settings.autoComplete_acceptKeys == autocompkeys:
+        if config_for(self).settings.autoComplete_acceptKeys == autocompkeys:
             return
         # Save new setting
-        pyzo.config.settings.autoComplete_acceptKeys = autocompkeys
+        config_for(self).settings.autoComplete_acceptKeys = autocompkeys
         # Apply
-        for e in pyzo.editors:
+        for e in context_for(self).editors:
             e.setAutoCompletionAcceptKeysFromStr(autocompkeys)
-        for s in pyzo.shells:
+        for s in context_for(self).shells:
             s.setAutoCompletionAcceptKeysFromStr(autocompkeys)
 
     def _setMode(self, autocompmode):
-        pyzo.config.settings.autoComplete = int(autocompmode)
+        config_for(self).settings.autoComplete = int(autocompmode)
 
     def _setCompleteKeywords(self, value):
-        pyzo.config.settings.autoComplete_keywords = bool(value)
+        config_for(self).settings.autoComplete_keywords = bool(value)
 
     def _configEditor(self, state, param):
         """Callback for code editor settings"""
         # Store this parameter in the config
-        setattr(pyzo.config.settings, param, state)
+        setattr(config_for(self).settings, param, state)
         # Apply to all editors and shells and the logger tool
         setter = "set" + param[0].upper() + param[1:]
-        codeEditorList = list(pyzo.editors) + list(pyzo.shells)
-        logger = pyzo.toolManager.getTool("pyzologger")
+        codeEditorList = list(context_for(self).editors) + list(context_for(self).shells)
+        logger = context_for(self).toolManager.getTool("pyzologger")
         if logger is not None:
             codeEditorList.append(logger._logger_shell)
         for editor in codeEditorList:
@@ -2283,20 +2301,27 @@ class AutocompMenu(Menu):
 class SettingsMenu(Menu):
     def build(self):
         icons = pyzo.icons
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            self.addItem(
+                "Workspace effective settings…",
+                None,
+                lambda: show_workspace_capabilities(self),
+            )
 
         # Create language menu
         from pyzo.util._locale import LANGUAGES, LANGUAGE_SYNONYMS
 
         # Update language setting if necessary
-        cur = pyzo.config.settings.language
-        pyzo.config.settings.language = LANGUAGE_SYNONYMS.get(cur, cur)
+        cur = config_for(self).settings.language
+        if getattr(pyzo, "workspaceContext", None) is None:
+            config_for(self).settings.language = LANGUAGE_SYNONYMS.get(cur, cur)
 
         # Create language menu
         t = translate("menu", "Select language ::: The language used by Pyzo.")
         self._languageMenu = GeneralOptionsMenu(self, t, self._selectLanguage)
         values = sorted(LANGUAGES)
         self._languageMenu.setOptions(values, values)
-        self._languageMenu.setCheckedOption(None, pyzo.config.settings.language)
+        self._languageMenu.setCheckedOption(None, config_for(self).settings.language)
 
         self.addBoolSetting(
             translate(
@@ -2304,7 +2329,7 @@ class SettingsMenu(Menu):
                 "Automatically indent ::: Indent when pressing enter after a colon.",
             ),
             "autoIndent",
-            lambda state, key: [e.setAutoIndent(state) for e in pyzo.editors],
+            lambda state, key: [e.setAutoIndent(state) for e in context_for(self).editors],
         )
         self.addBoolSetting(
             translate(
@@ -2339,20 +2364,23 @@ class SettingsMenu(Menu):
 
     def addBoolSetting(self, name, key, callback=None):
         def _callback(state, key):
-            setattr(pyzo.config.settings, key, state)
+            setattr(config_for(self).settings, key, state)
             if callback is not None:
                 callback(state, key)
 
         self.addCheckItem(
-            name, None, _callback, key, getattr(pyzo.config.settings, key)
+            name, None, _callback, key, getattr(config_for(self).settings, key)
         )  # Default value
 
     def _selectLanguage(self, languageName):
         # Skip if the same
-        if pyzo.config.settings.language == languageName:
+        if config_for(self).settings.language == languageName:
             return
         # Save new language
-        pyzo.config.settings.language = languageName
+        config_for(self).settings.language = languageName
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            show_workspace_capabilities(self)
+            return
         # Notify user
         text = translate(
             "menu dialog",
@@ -2372,11 +2400,11 @@ class SettingsMenu(Menu):
         dialog.exec()
 
     def _editColorDialog(self):
-        dialog = EditColorDialog()
+        dialog = EditColorDialog(self)
         dialog.exec()
 
     def _advancedSettingDialog(self):
-        dialog = AdvancedSettings()
+        dialog = AdvancedSettings(self)
         dialog.exec()
 
 
@@ -2734,8 +2762,8 @@ class KeyMapEditDialog(QtWidgets.QDialog):
         self._intro = "Set the {} shortcut for:\n{}".format(primSec, tmp)
         self._updateLabel()
         # set initial value
-        if fullname in pyzo.config.shortcuts2:
-            current = pyzo.config.shortcuts2[fullname]
+        if fullname in config_for(self).shortcuts2:
+            current = config_for(self).shortcuts2[fullname]
             if "," not in current:
                 current += ","
             current = current.split(",")
@@ -2776,7 +2804,7 @@ class KeyMapEditDialog(QtWidgets.QDialog):
             return
 
         warning = None
-        for key in pyzo.config.shortcuts2:
+        for key in config_for(self).shortcuts2:
             # get shortcut and test whether it corresponds with what's pressed
             shortcuts = getShortcut(key)
             primSec = ""
@@ -2796,7 +2824,7 @@ class KeyMapEditDialog(QtWidgets.QDialog):
         shortcut = self._line.text()
 
         # remove shortcut if present elsewhere
-        for key in list(pyzo.config.shortcuts2):
+        for key in list(config_for(self).shortcuts2):
             # get shortcut, test whether it corresponds with what's pressed
             shortcuts = getShortcut(key)
             tmp = list(shortcuts)
@@ -2811,20 +2839,20 @@ class KeyMapEditDialog(QtWidgets.QDialog):
                 tmp = ",".join(tmp)
                 tmp = tmp.replace(" ", "")
                 if len(tmp) == 1:
-                    del pyzo.config.shortcuts2[key]
+                    del config_for(self).shortcuts2[key]
                 else:
-                    pyzo.config.shortcuts2[key] = tmp
+                    config_for(self).shortcuts2[key] = tmp
 
         # insert shortcut
         if self._fullname:
             # get current and make list of size two
-            if self._fullname in pyzo.config.shortcuts2:
+            if self._fullname in config_for(self).shortcuts2:
                 current = list(getShortcut(self._fullname))
             else:
                 current = ["", ""]
             # update the list
             current[int(not self._isprimary)] = shortcut
-            pyzo.config.shortcuts2[self._fullname] = ",".join(current)
+            config_for(self).shortcuts2[self._fullname] = ",".join(current)
 
         # close
         self.close()
@@ -3147,16 +3175,16 @@ class AdvancedSettings(QtWidgets.QDialog):
             # change value
             if node:
                 # case: node - parent - key - value
-                if node_val in pyzo.config.keys():
+                if node_val in config_for(self).keys():
                     if (
-                        parent_val in pyzo.config[node_val].keys()
+                        parent_val in config_for(self)[node_val].keys()
                     ):  # bugfix +[node_val]+
-                        pyzo.config[node_val][parent_val][key] = value
+                        config_for(self)[node_val][parent_val][key] = value
             else:
                 # case: parent - key - value
                 if parent:
-                    if parent_val in pyzo.config.keys():
-                        pyzo.config[parent_val][key] = value
+                    if parent_val in config_for(self).keys():
+                        config_for(self)[parent_val][key] = value
 
             # bold changed item
             font = item.font(column)
@@ -3168,9 +3196,9 @@ class AdvancedSettings(QtWidgets.QDialog):
     def fillTree(self):
         """Fill the tree with settings"""
         # fill tree
-        for item in pyzo.config.keys():
+        for item in config_for(self).keys():
             root = QtWidgets.QTreeWidgetItem(self._tree, [item])
-            node = pyzo.config[item]
+            node = config_for(self)[item]
             if isinstance(node, pyzo.util.zon.Dict):
                 for k, v in node.items():
                     if isinstance(v, pyzo.util.zon.Dict):
@@ -3195,9 +3223,7 @@ class AdvancedSettings(QtWidgets.QDialog):
                     if isinstance(k, pyzo.util.zon.Dict):
                         A = QtWidgets.QTreeWidgetItem(root, ["shell_{}".format(str(n))])
                         for kk, vv in k.items():
-                            QtWidgets.QTreeWidgetItem(
-                                A, [str(kk), str(vv), str(type(vv))]
-                            )
+                            QtWidgets.QTreeWidgetItem(A, [str(kk), str(vv), str(type(vv))])
                         n += 1
 
     def onClickSelect(self, item, column):
@@ -3216,5 +3242,5 @@ class AdvancedSettings(QtWidgets.QDialog):
         """Replace current shell setting with backup shell settings."""
 
         old_shell_settings = self.getBackupShellSettings()
-        pyzo.config["shellConfigs2"] = old_shell_settings
+        config_for(self)["shellConfigs2"] = old_shell_settings
         pyzo.saveConfig()

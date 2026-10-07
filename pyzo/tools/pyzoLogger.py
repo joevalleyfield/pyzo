@@ -4,7 +4,7 @@ import code
 import pyzo
 from pyzo.qt import QtCore, QtGui, QtWidgets  # noqa
 from pyzo.core.shell import BaseShell
-from pyzo.core.pyzoLogging import splitConsole
+from pyzo.core.pyzoLogging import splitConsole, unsplitConsole
 
 tool_name = pyzo.translate("pyzoLogger", "Logger")
 tool_summary = "Logs messages, warnings and errors within Pyzo."
@@ -38,6 +38,9 @@ class PyzoLogger(QtWidgets.QWidget):
 
     def updateFont(self):
         self._logger_shell.setFont(pyzo.config.view.fontname)
+
+    def cleanUp(self):
+        unsplitConsole(self._logger_shell.write, self._logger_shell.writeErr)
 
 
 class PyzoLoggerShell(BaseShell):

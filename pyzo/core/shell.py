@@ -25,6 +25,7 @@ Qt = QtCore.Qt
 from pyzo.codeeditor.highlighter import Highlighter
 from pyzo.codeeditor import parsers
 
+from pyzo.core.workspaceContext import config_for, context_for, history_for
 from pyzo.core.baseTextCtrl import BaseTextCtrl
 from pyzo.core.pyzoLogging import print
 from pyzo.core.kernelbroker import KernelInfo, Kernelmanager
@@ -72,7 +73,7 @@ A_MOVE = QtGui.QTextCursor.MoveMode.MoveAnchor
 pyzo.localKernelManager = Kernelmanager(public=False)
 
 
-def finishKernelInfo(info, scriptFile=None):
+def finishKernelInfo(info, scriptFile=None, *, context=None):
     """Get a copy of the kernel info struct, with the scriptFile
     and the projectPath set.
     """
@@ -88,7 +89,7 @@ def finishKernelInfo(info, scriptFile=None):
 
     # If the file browser is active, and has the check box
     #'add path to Python path' set, set the PROJECTPATH variable
-    fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+    fileBrowser = (context or pyzo).toolManager.getTool("pyzofilebrowser")
     info.projectPath = ""
     if fileBrowser:
         info.projectPath = fileBrowser.getAddToPythonPath()
@@ -268,7 +269,7 @@ class BaseShell(BaseTextCtrl):
         self.setWordWrapMode(QtGui.QTextOption.WrapMode.WrapAnywhere)
 
         # Limit number of lines
-        self.setMaximumBlockCount(MAXBLOCKCOUNT)
+        self.setMaximumBlockCount(config_for(self).advanced.shellMaxLines)
 
         # Keep track of position, so we can disable editing if the cursor
         # is before the prompt
@@ -546,9 +547,7 @@ class BaseShell(BaseTextCtrl):
                         # this works for any prompt, even without any whitespace at the end:
                         mo = re.match(r"(\s*([^\s\W]+|[^\s\w]+|))", text[::-1])
                         numDelete = len(mo[1])
-                        cursor.movePosition(
-                            cursor.MoveOperation.Left, A_KEEP, numDelete
-                        )
+                        cursor.movePosition(cursor.MoveOperation.Left, A_KEEP, numDelete)
                         cursor.removeSelectedText()
                         return
                     else:
@@ -586,9 +585,7 @@ class BaseShell(BaseTextCtrl):
                     self._historyStep = 1
 
             # find the command
-            c = pyzo.command_history.find_starting_with(
-                self._historyNeedle, self._historyStep
-            )
+            c = history_for(self).find_starting_with(self._historyNeedle, self._historyStep)
             if c is None:
                 # found nothing-> reset
                 self._historyStep = 0
@@ -851,7 +848,7 @@ class BaseShell(BaseTextCtrl):
 
             if command:
                 # Remember the command in this global history
-                pyzo.command_history.append(command)
+                history_for(self).append(command)
 
         if execute:
             command = command.replace("\r\n", "\n")
@@ -1198,8 +1195,8 @@ class PythonShell(BaseShell):
         super().__init__(parent)
 
         # Get standard info if not given.
-        if info is None and pyzo.config.shellConfigs2:
-            info = pyzo.config.shellConfigs2[0]
+        if info is None and config_for(self).shellConfigs2:
+            info = config_for(self).shellConfigs2[0]
         if not info:
             info = KernelInfo(None)
 
@@ -1317,7 +1314,7 @@ class PythonShell(BaseShell):
 
         # Connect! The broker will only start the kernel AFTER
         # we connect, so we do not miss out on anything.
-        kernel_info = finishKernelInfo(info)
+        kernel_info = finishKernelInfo(info, context=context_for(self))
         kernel_info.nativeTransportEpoch = self._nativeTransportEpoch
         slot = pyzo.localKernelManager.createKernel(kernel_info)
         self._brokerConnection = ct.connect("localhost:{}".format(slot))
@@ -1478,7 +1475,7 @@ class PythonShell(BaseShell):
         # Include builtins and keywords?
         if not aco.name:
             aco.addNames(self._builtins)
-            if pyzo.config.settings.autoComplete_keywords:
+            if config_for(self).settings.autoComplete_keywords:
                 aco.addNames(self._keywords)
                 aco.addNames(self._softKeywords)
         elif aco.name == "[":
@@ -1957,7 +1954,7 @@ class PythonShell(BaseShell):
         self.ensureCursorAtEditLine()
 
         # Get info
-        info = finishKernelInfo(self._info, scriptFile)
+        info = finishKernelInfo(self._info, scriptFile, context=context_for(self))
         self._nativeTransportEpoch = uuid4().hex
         info.nativeTransportEpoch = self._nativeTransportEpoch
         provenance = getattr(self, "_workspaceOperation", None)

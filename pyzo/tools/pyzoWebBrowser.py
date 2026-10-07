@@ -211,7 +211,10 @@ class PyzoWebBrowser(QtWidgets.QFrame):
 
         # Start
         self._view.show()
-        self.go("https://docs.python.org")
+        if getattr(pyzo, "owner", None) is None:
+            self.go("https://docs.python.org")
+        else:
+            self._view.setHtml("Enter an address to open a page.")
 
     def parseAddress(self, address):
         if not address.startswith("http"):

@@ -47,6 +47,7 @@ class PeerStatusService(QtCore.QObject):
         self._clearTimer = QtCore.QTimer(self)
         self._clearTimer.setSingleShot(True)
         self._clearTimer.timeout.connect(self.clearMessage)
+        self.visibility_getter = self.visibility_setter = None
 
     def showMessage(self, message, timeout=0):
         self._clearTimer.stop()
@@ -65,7 +66,14 @@ class PeerStatusService(QtCore.QObject):
         self._state.set_cursor_text(cursorPositionText(editor))
 
     def setVisible(self, visible):
-        self._state.set_visible(visible)
+        if self.visibility_setter is not None:
+            self.visibility_setter(visible)
+        else:
+            self._state.set_visible(visible)
 
     def isVisible(self):
-        return self._state.snapshot.visible
+        return (
+            self.visibility_getter()
+            if self.visibility_getter is not None
+            else self._state.snapshot.visible
+        )

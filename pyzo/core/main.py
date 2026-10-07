@@ -882,8 +882,7 @@ class MainWindow(_ApplicationHostBase):
                         *persisted_loaded_ids,
                     )
                     if identity in persisted_loaded_ids
-                    and identity
-                    in self._peerWorkspacePersistenceLoad.state.workspaces
+                    and identity in self._peerWorkspacePersistenceLoad.state.workspaces
                 ),
                 None,
             )
@@ -893,10 +892,8 @@ class MainWindow(_ApplicationHostBase):
             )
             factory_startup = persisted_workspace_id is None
             if persisted_workspace_id is not None:
-                workspace_record = (
-                    self._peerWorkspacePersistenceLoad.state.workspaces.get(
-                        persisted_workspace_id, {}
-                    )
+                workspace_record = self._peerWorkspacePersistenceLoad.state.workspaces.get(
+                    persisted_workspace_id, {}
                 )
                 extensions = (
                     workspace_record.get("extensions", {})
@@ -908,11 +905,7 @@ class MainWindow(_ApplicationHostBase):
                     if isinstance(workspace_record, dict)
                     else {}
                 )
-                layout = (
-                    session.get("layout", {})
-                    if isinstance(session, dict)
-                    else {}
-                )
+                layout = session.get("layout", {}) if isinstance(session, dict) else {}
                 has_nonempty_layout = bool(
                     isinstance(layout, dict) and layout.get("frames")
                 )
@@ -922,9 +915,7 @@ class MainWindow(_ApplicationHostBase):
                 has_workspace_views = any(
                     isinstance(view, dict)
                     and view.get("workspace_id") == persisted_workspace_id
-                    for view in (
-                        views.values() if isinstance(views, dict) else ()
-                    )
+                    for view in (views.values() if isinstance(views, dict) else ())
                 )
                 migration_pending = bool(
                     self._peerWorkspacePersistenceLoad.state.application_state.get(
@@ -937,22 +928,13 @@ class MainWindow(_ApplicationHostBase):
                     and not has_workspace_views
                 )
                 factory_startup = migration_pending or not has_nonempty_layout
-            self._peerFactoryStartup = (
-                factory_startup and "--test" not in sys.argv
-            )
-            if (
-                persisted_workspace_id is None
-                and not self._peerPersistedEmptyWorkspaceSet
-            ):
+            self._peerFactoryStartup = factory_startup and "--test" not in sys.argv
+            if persisted_workspace_id is None and not self._peerPersistedEmptyWorkspaceSet:
                 candidate_identity = new_identity(IdentityKind.WORKSPACE)
                 if (
-                    (
-                        "--test" not in sys.argv
-                        or os.environ.get("PYZO_TEST_WORKSPACE_PERSISTENCE")
-                        == "1"
-                    )
-                    and not self._peerWorkspacePersistenceBlocked
-                ):
+                    "--test" not in sys.argv
+                    or os.environ.get("PYZO_TEST_WORKSPACE_PERSISTENCE") == "1"
+                ) and not self._peerWorkspacePersistenceBlocked:
                     try:
                         migration = self._peerWorkspaceStore.migrate_legacy(
                             self._peerLegacyWorkspacePayload(),
@@ -963,8 +945,7 @@ class MainWindow(_ApplicationHostBase):
                     except Exception as error:
                         self._peerWorkspacePersistenceBlocked = True
                         print(
-                            "Could not migrate peer workspace persistence: "
-                            + str(error),
+                            "Could not migrate peer workspace persistence: " + str(error),
                             file=sys.stderr,
                         )
             if persisted_workspace_id is not None:
@@ -1023,7 +1004,8 @@ class MainWindow(_ApplicationHostBase):
                 name=primary_name,
                 persistence_location=primary_location,
                 state=primary_profile,
-                persisted=not self._peerPersistedEmptyWorkspaceSet and not (
+                persisted=not self._peerPersistedEmptyWorkspaceSet
+                and not (
                     initial_failures
                     and str(self._peerWorkspaceIdentity) not in persisted_loaded_ids
                 ),
@@ -1063,10 +1045,7 @@ class MainWindow(_ApplicationHostBase):
 
             self._peerRestoreRuntimeFactory = restore_runtime
             restored, failures = self._peerRuntimeCatalog.restore_loaded(
-                {
-                    str(identity): record
-                    for identity, record in records.items()
-                },
+                {str(identity): record for identity, record in records.items()},
                 tuple(
                     identity
                     for identity in loaded_ids
@@ -1086,9 +1065,7 @@ class MainWindow(_ApplicationHostBase):
             self._peerDocumentViews = DocumentViewRegistry()
             self._peerDocumentResources = DocumentResourceRegistry()
             self._peerPersistedDocumentResources = deepcopy(
-                dict(
-                    self._peerWorkspacePersistenceLoad.state.shared_resources
-                )
+                dict(self._peerWorkspacePersistenceLoad.state.shared_resources)
             )
             persisted_resources = self._peerPersistedDocumentResources
             if persisted_resources.get("schema") == 1:
@@ -1118,9 +1095,7 @@ class MainWindow(_ApplicationHostBase):
             self._peerRecoveryFailureChooser = self._choosePeerRecoveryFailure
             self._peerRecoveryRetention = RecoveryRetentionCoordinator(
                 self._peerRecoveryStore,
-                lambda documents, error: self._peerRecoveryFailureChooser(
-                    documents, error
-                ),
+                lambda documents, error: self._peerRecoveryFailureChooser(documents, error),
             )
             QtWidgets.qApp.setQuitOnLastWindowClosed(False)
             self._dockManager = self._peerBackend.manager
@@ -1129,10 +1104,9 @@ class MainWindow(_ApplicationHostBase):
                 self._peerStatusState,
                 self._dockManager,
                 frame_provider=self._peerRuntimeFrameWindows,
+                frame_visibility=self._peerFrameStatusVisible,
             )
-            pyzo.commands = CommandRegistry(
-                self._peerWorkspaces.resolve_active_context
-            )
+            pyzo.commands = CommandRegistry(self._peerWorkspaces.resolve_active_context)
             pyzo.commands.register(
                 CommandDescriptor(
                     "application.quit",
@@ -1153,8 +1127,8 @@ class MainWindow(_ApplicationHostBase):
                     VIEW_STATUS_COMMAND,
                     translate("menu", "Show status bar"),
                     self._togglePeerStatusBar,
-                    checked_when=lambda _context: (
-                        self._peerStatusState.snapshot.visible
+                    checked_when=lambda context: self._workspaceStatusVisible(
+                        context.workspace_id if context else None
                     ),
                     checkable=True,
                 )
@@ -1192,9 +1166,7 @@ class MainWindow(_ApplicationHostBase):
             self._dockManager.floatingWidgetCreated.connect(self._traceAdsWidget)
             with open(trace_path, "a", encoding="utf-8") as trace:
                 trace.write("--- ADS trace installed ---\n")
-        self._dockManager.focusedDockWidgetChanged.connect(
-            self._onFocusedDockWidgetChanged
-        )
+        self._dockManager.focusedDockWidgetChanged.connect(self._onFocusedDockWidgetChanged)
         if self._peerFrameMode:
             for identity in self._peerRuntimeCatalog.identities:
                 runtime = self._peerRuntimeCatalog.runtime(identity)
@@ -1218,9 +1190,7 @@ class MainWindow(_ApplicationHostBase):
         self._EditorTabs = EditorTabs
         self._ShellStackWidget = ShellStackWidget
         runtime = getattr(self, "_peerRuntime", None)
-        self._editorHosts = (
-            runtime.editor_hosts if runtime is not None else {}
-        )
+        self._editorHosts = runtime.editor_hosts if runtime is not None else {}
         self._shellHosts = runtime.shell_hosts if runtime is not None else {}
         self._editorHostSerial = 0
         self._shellHostSerial = 0
@@ -1238,9 +1208,7 @@ class MainWindow(_ApplicationHostBase):
         )
         if self._peerFrameMode:
             self._peerPaneFocusFilter = _PeerPaneFocusFilter(self)
-            QtWidgets.QApplication.instance().installEventFilter(
-                self._peerPaneFocusFilter
-            )
+            QtWidgets.QApplication.instance().installEventFilter(self._peerPaneFocusFilter)
 
         # There is one legacy host per document/interpreter. Its internal
         # selector is hidden; QtADS is the sole visible grouping layer.
@@ -1248,9 +1216,7 @@ class MainWindow(_ApplicationHostBase):
             parent=self,
             group_factory=self._createEditorHost,
             group_remover=self._removeEditorHost,
-            close_requester=(
-                self._requestPeerEditorClose if self._peerFrameMode else None
-            ),
+            close_requester=(self._requestPeerEditorClose if self._peerFrameMode else None),
             retain_last_empty_group=not self._peerFrameMode,
         )
         self._primaryEditors = pyzo.editors.createGroup()
@@ -1286,9 +1252,7 @@ class MainWindow(_ApplicationHostBase):
         # Kernel/execution affinity is intentionally not part of this globally
         # projected state; focus must not silently select a run target.
         if self._peerFrameMode:
-            self._peerStatusService = PeerStatusService(
-                self._peerStatusState, self
-            )
+            self._peerStatusService = PeerStatusService(self._peerStatusState, self)
             self._peerApplicationController = PeerApplicationController(
                 parent=QtWidgets.qApp,
                 workspace=self._peerWorkspace,
@@ -1300,9 +1264,7 @@ class MainWindow(_ApplicationHostBase):
                 request_restart=self.restart,
                 set_style=self.setQtStyle,
                 get_execution_shell=lambda: pyzo.shells.getExecutionShell(),
-                set_execution_shell=lambda shell: pyzo.shells.setExecutionShell(
-                    shell
-                ),
+                set_execution_shell=lambda shell: pyzo.shells.setExecutionShell(shell),
                 tools=self._toolWorkspace,
                 metadata=pyzo.metadata,
                 panes=self._paneLifecycle,
@@ -1335,14 +1297,15 @@ class MainWindow(_ApplicationHostBase):
             from pyzo.core.workspaceDebugging import WorkspaceDebugging
 
             pyzo.application.workspace_debugging = WorkspaceDebugging(
-                pyzo.application.documents, self._peerSelectionExecution, pyzo.editors,
+                pyzo.application.documents,
+                self._peerSelectionExecution,
+                pyzo.editors,
                 lambda: self._peerRetentionCoordinator.edit(),
-                self._openPeerDebugSource, self._peerStatusService.showMessage,
+                self._openPeerDebugSource,
+                self._peerStatusService.showMessage,
             )
             pyzo.runCommands.set_selection_execution(self._peerSelectionExecution)
-            pyzo.runCommands.set_main_services(
-                self._peerMainEditor, self._peerMainChanged
-            )
+            pyzo.runCommands.set_main_services(self._peerMainEditor, self._peerMainChanged)
             for host in pyzo.shells.hosts:
                 self._bindPeerShellLifecycle(host)
             pyzo.workspaceSession = WorkspaceSessionService(
@@ -1365,7 +1328,31 @@ class MainWindow(_ApplicationHostBase):
             pyzo.workspaceSession = None
             pyzo.workspacePersistence = None
             self.setStatusBar(StatusBar())
-        self.statusBar().setVisible(pyzo.config.view.showStatusbar)
+        if self._peerFrameMode:
+            from pyzo.core.workspaceContext import WorkspaceContexts
+            from pyzo.core.workspaceTools import WorkspaceToolCatalog
+
+            pyzo.workspaceContext = WorkspaceContexts(self, pyzo.command_history)
+            pyzo.application.workspace_context = pyzo.workspaceContext
+            pyzo.toolManager = WorkspaceToolCatalog(pyzo.workspaceContext)
+            pyzo.workspaceSession = self._workspaceSessionFor(self._peerRuntime)
+            for identity in self._peerRuntimeCatalog.identities:
+                pyzo.workspaceContext.ensure(identity)
+            self._peerStatusService.visibility_getter = lambda: (
+                self._workspaceStatusVisible(self._peerWorkspaces.active_workspace_id)
+            )
+            self._peerStatusService.visibility_setter = (
+                self._setActiveWorkspaceStatusVisible
+            )
+            self._peerContextSnapshot = None
+            self._peerContextTimer = QtCore.QTimer(self)
+            self._peerContextTimer.setInterval(1000)
+            self._peerContextTimer.timeout.connect(self._checkpointPeerContext)
+            self._peerContextTimer.start()
+        else:
+            pyzo.workspaceContext = None
+        if not self._peerFrameMode:
+            self.statusBar().setVisible(pyzo.config.view.showStatusbar)
         if self._peerFrameMode and self._peerWorkspacePersistenceLoad.issues:
             unavailable = self._peerWorkspacePersistenceLoad.unavailable_workspace_ids
             detail = (
@@ -1459,28 +1446,22 @@ class MainWindow(_ApplicationHostBase):
                 assert pyzo.application.workspaces.active_identity == (
                     self._peerWorkspaceIdentity
                 )
-                assert pyzo.application.documents.registry is (
-                    self._peerDocumentResources
-                )
-                first_document_id = pyzo.application.documents.identity(
-                    first_item.editor
-                )
-                second_document_id = pyzo.application.documents.identity(
-                    second_item.editor
-                )
+                assert pyzo.application.documents.registry is (self._peerDocumentResources)
+                first_document_id = pyzo.application.documents.identity(first_item.editor)
+                second_document_id = pyzo.application.documents.identity(second_item.editor)
                 assert first_document_id.kind is self._PeerIdentityKind.DOCUMENT
                 assert second_document_id.kind is self._PeerIdentityKind.DOCUMENT
                 assert first_document_id != second_document_id
-                first_view_id = pyzo.application.documents.view_identity(
-                    first_item.editor
-                )
+                first_view_id = pyzo.application.documents.view_identity(first_item.editor)
                 assert first_view_id.kind is self._PeerIdentityKind.VIEW
-                assert self._peerDocumentResources.view(
-                    first_view_id
-                ).workspace_id == self._peerWorkspaceIdentity
-                assert pyzo.application.documents.resource(
-                    first_item.editor
-                ).text == first_item.editor.toPlainText()
+                assert (
+                    self._peerDocumentResources.view(first_view_id).workspace_id
+                    == self._peerWorkspaceIdentity
+                )
+                assert (
+                    pyzo.application.documents.resource(first_item.editor).text
+                    == first_item.editor.toPlainText()
+                )
                 assert pyzo.application.active_peer.window() is not None
                 assert pyzo.application.status.service is self._peerStatusService
                 assert pyzo.application.execution_target.shell() is (
@@ -1593,7 +1574,9 @@ class MainWindow(_ApplicationHostBase):
                 print("Pyzo ADS dual-layer drop-guide paint smoke test passed")
             callLater(self._testIndependentShellDocks)
         # Load tools
-        if self._peerFrameMode and self._peerFactoryStartup:
+        if self._peerFrameMode and not self._peerWorkspaces.workspace_ids:
+            pass
+        elif self._peerFrameMode and self._peerFactoryStartup:
             pyzo.toolManager.loadTool("pyzosourcestructure")
             pyzo.toolManager.loadTool("pyzofilebrowser", "pyzosourcestructure")
         elif pyzo.config.state.newUser and not pyzo.config.state.loadedTools:
@@ -1654,9 +1637,7 @@ class MainWindow(_ApplicationHostBase):
                 print("Could not restore peer workspace session: " + result.detail)
         self._peerApplicationLifecycle.initialize_default_frame()
 
-    def _restorePersistedPeerEditors(
-        self, workspace_ids=None, *, include_retained=False
-    ):
+    def _restorePersistedPeerEditors(self, workspace_ids=None, *, include_retained=False):
         """Recreate persisted open editor views before restoring their layout."""
 
         resources = self._peerPersistedDocumentResources
@@ -1759,9 +1740,7 @@ class MainWindow(_ApplicationHostBase):
                     cursor = editor.textCursor()
                     selection = state.get("selection", (0, 0))
                     cursor.setPosition(int(selection[0]))
-                    cursor.setPosition(
-                        int(selection[1]), cursor.MoveMode.KeepAnchor
-                    )
+                    cursor.setPosition(int(selection[1]), cursor.MoveMode.KeepAnchor)
                     editor.setTextCursor(cursor)
                     editor.verticalScrollBar().setValue(int(state.get("scroll", 0)))
                 resource = self._peerDocumentResources.resource(
@@ -1787,6 +1766,11 @@ class MainWindow(_ApplicationHostBase):
                 "Retained buffers conflict with files on disk: "
                 + ", ".join(str(path) for path in external_conflicts)
             )
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            for identity in self._peerRuntimeCatalog.identities:
+                if str(identity) not in loaded_workspace_ids:
+                    continue
+                self._restoreWorkspaceTools(identity)
         view_workspace_ids = {
             str(view.get("workspace_id"))
             for _view_id, view in persisted_views
@@ -1800,11 +1784,7 @@ class MainWindow(_ApplicationHostBase):
                 str(identity), {}
             )
             result = self._restorePeerRuntimeLayout(runtime, record)
-            if (
-                runtime is not self._peerRuntime
-                and not result.applied
-                and result.detail
-            ):
+            if runtime is not self._peerRuntime and not result.applied and result.detail:
                 self._peerWorkspaceRestoreFailures[str(identity)] = result.detail
         for host in pyzo.editors.groups:
             self._bindPeerEditorLifecycle(host)
@@ -1828,7 +1808,8 @@ class MainWindow(_ApplicationHostBase):
         workspace = self._peerWorkspaces.model(runtime.identity)
         editor_views = session.get("editor_views")
         if isinstance(editor_views, dict) and all(
-            pane.kind is self._PeerPaneKind.EDITOR for pane in workspace.panes.values()
+            pane.kind in (self._PeerPaneKind.EDITOR, self._PeerPaneKind.TOOL)
+            for pane in workspace.panes.values()
         ):
             from spikes.peer_frames.workspace_session import retained_pane_layout
 
@@ -1844,6 +1825,9 @@ class MainWindow(_ApplicationHostBase):
                 for view_id, pane_id in editor_views.items()
                 if view_id in current_views
             }
+            for pane_id, pane in workspace.panes.items():
+                if pane.kind is self._PeerPaneKind.TOOL:
+                    pane_ids[pane_id] = pane_id
             if set(pane_ids.values()) != set(workspace.panes):
                 return self._PeerOperationResult(
                     self._PeerOperationStatus.INVALID,
@@ -1854,24 +1838,14 @@ class MainWindow(_ApplicationHostBase):
         saved_frames = saved.get("frames", [])
         current_frames = current.get("frames", [])
         saved_groups = [
-            group
-            for frame in saved_frames
-            for group in frame.get("groups", [])
+            group for frame in saved_frames for group in frame.get("groups", [])
         ]
         current_groups = [
-            group
-            for frame in current_frames
-            for group in frame.get("groups", [])
+            group for frame in current_frames for group in frame.get("groups", [])
         ]
-        saved_panes = [
-            pane
-            for group in saved_groups
-            for pane in group.get("panes", [])
-        ]
+        saved_panes = [pane for group in saved_groups for pane in group.get("panes", [])]
         current_panes = [
-            pane
-            for group in current_groups
-            for pane in group.get("panes", [])
+            pane for group in current_groups for pane in group.get("panes", [])
         ]
         if not (
             len(saved_frames) == len(current_frames)
@@ -1989,9 +1963,7 @@ class MainWindow(_ApplicationHostBase):
                 return result
             while runtime.model.panes:
                 pane_id = next(iter(runtime.model.panes))
-                result = runtime.model.request_close_pane(
-                    pane_id, self._resolvePeerClose
-                )
+                result = runtime.model.request_close_pane(pane_id, self._resolvePeerClose)
                 if not result.applied:
                     context = runtime.model.resolve_pane_context(pane_id)
                     if context is not None and context.frame_id is None:
@@ -2004,6 +1976,8 @@ class MainWindow(_ApplicationHostBase):
         removed = self._peerWorkspaces.remove_workspace(identity)
         if not removed.applied:
             return removed
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            pyzo.workspaceContext.retire(identity)
         self._peerRuntimeCatalog.dispose(identity)
         self._peerWorkspaceRestoreFailures.pop(str(identity), None)
         if survivors and identity == self._peerRuntime.identity:
@@ -2038,9 +2012,9 @@ class MainWindow(_ApplicationHostBase):
             self._editorHosts = self._peerRuntime.editor_hosts
             self._shellHosts = self._peerRuntime.shell_hosts
             self._peerPersistedEmptyWorkspaceSet = True
-        self._savePeerWorkspacePersistence(
-            preserve_workspace_ids=(str(identity),)
-        )
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            pyzo.workspaceSession = self._workspaceSessionFor(self._peerRuntime)
+        self._savePeerWorkspacePersistence(preserve_workspace_ids=(str(identity),))
         self._peerRetentionCoordinator.edit()
         self._reconcilePeerChrome(self._peerRuntimeFrameWindows())
         return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
@@ -2120,8 +2094,7 @@ class MainWindow(_ApplicationHostBase):
             )
         loaded = self._peerWorkspaceStore.load()
         if any(
-            issue.kind in {"process", "resources", "application"}
-            for issue in loaded.issues
+            issue.kind in {"process", "resources", "application"} for issue in loaded.issues
         ):
             self._peerWorkspacePersistenceBlocked = True
             raise RuntimeError("workspace process persistence is unavailable")
@@ -2138,21 +2111,25 @@ class MainWindow(_ApplicationHostBase):
             previous["profile"] = deepcopy(
                 dict(workspaces.get(captured_id, {}).get("profile", {}))
             )
-            previous["profile"].update(
-                deepcopy(dict(captured_record.get("profile", {})))
-            )
+            previous["profile"].update(deepcopy(dict(captured_record.get("profile", {}))))
             extensions = deepcopy(
                 dict(workspaces.get(captured_id, {}).get("extensions", {}))
             )
             extensions.update(deepcopy(dict(captured_record.get("extensions", {}))))
             if captured_id == workspace_id:
-                previous["session"] = pyzo.workspaceSession.capture()
+                previous["session"] = self._workspaceSessionFor(
+                    self._peerRuntimeCatalog.runtime(self._peerWorkspaceIdentity)
+                ).capture()
                 extensions["pyzo_peer_initialized"] = True
             runtime = self._peerRuntimeCatalog.runtime(
-                self._PeerApplicationIdentity(
-                    self._PeerIdentityKind.WORKSPACE, captured_id
-                )
+                self._PeerApplicationIdentity(self._PeerIdentityKind.WORKSPACE, captured_id)
             )
+            contexts = getattr(pyzo, "workspaceContext", None)
+            if contexts is not None:
+                previous["profile"]["contextual"] = contexts.snapshot(runtime.identity)
+                previous["session"]["loaded_tools"] = pyzo.toolManager.for_workspace(
+                    runtime.identity
+                ).getLoadedTools()
             previous["session"]["frame_geometries"] = {
                 frame_id: [
                     window.geometry().x(),
@@ -2178,8 +2155,7 @@ class MainWindow(_ApplicationHostBase):
         loaded_ids += tuple(
             identity
             for identity in loaded.state.loaded_workspace_ids
-            if identity in self._peerWorkspaceRestoreFailures
-            and identity not in loaded_ids
+            if identity in self._peerWorkspaceRestoreFailures and identity not in loaded_ids
         )
         active_workspace_id = captured["active_workspace_id"] or workspace_id
         if active_workspace_id not in loaded_ids:
@@ -2299,6 +2275,107 @@ class MainWindow(_ApplicationHostBase):
         )
         return merged
 
+    def _checkpointPeerContext(self):
+        contexts = getattr(pyzo, "workspaceContext", None)
+        if contexts is None or getattr(self, "_peerClosingWorkspace", False):
+            return
+        snapshot = {
+            str(owner): contexts.snapshot(owner)
+            for owner in self._peerWorkspaces.workspace_ids
+        }
+        if snapshot != self._peerContextSnapshot:
+            previous = self._peerContextSnapshot or {}
+            for owner in self._peerWorkspaces.workspace_ids:
+                if snapshot[str(owner)].get("config") != previous.get(str(owner), {}).get(
+                    "config"
+                ):
+                    contexts.apply_preferences(owner)
+            self._peerContextSnapshot = deepcopy(snapshot)
+            self._peerRetentionCoordinator.edit()
+        self._refreshWorkspaceAffiliation()
+        self._peerStatusProjector.refresh()
+
+    def _refreshWorkspaceAffiliation(self):
+        if not hasattr(self, "_peerWorkspaces"):
+            return
+        from shiboken6 import isValid
+
+        multiple = len(self._peerWorkspaces.workspace_ids) > 1
+        for owner in self._peerWorkspaces.workspace_ids:
+            runtime = self._peerRuntimeCatalog.runtime(owner)
+            runtime.backend._refresh_live_frame_windows()
+            name = self._peerWorkspaces.descriptor(owner).name
+            for pane_id, dock in runtime.backend.docks.items():
+                if not isValid(dock):
+                    continue
+                pane = runtime.model.panes.get(pane_id)
+                if pane is None:
+                    continue
+                label = f"{pane.title} · {name}" if multiple else pane.title
+                dock._workspaceContextOwner = owner
+                dock.setWindowTitle(label)
+                dock.setAccessibleName(f"{pane.title}; workspace {name}")
+                content = dock.widget()
+                if content is not None:
+                    content._workspaceContextOwner = owner
+                    content.setAccessibleName(f"{pane.title}; workspace {name}")
+            for frame_id, frame in runtime.frame_windows.items():
+                if not isValid(frame):
+                    continue
+                frame._workspaceContextOwner = owner
+                frame.setAccessibleName(f"Workspace {name}; frame {frame_id}")
+
+    def _addWorkspaceToolDock(self, owner, dock, target=None):
+        runtime = self._peerRuntimeCatalog.runtime(owner)
+        pane_id = (
+            f"tool-{dock._toolId}"
+            if owner == self._peerWorkspaceIdentity
+            else f"tool-{owner}-{dock._toolId}"
+        )
+        self._registerPeerDock(
+            pane_id, self._PeerPaneKind.TOOL, dock.windowTitle(), dock, runtime=runtime
+        )
+        result = runtime.model.set_close_policy(
+            pane_id, _PyzoToolClosePolicy(self, pane_id, dock)
+        )
+        if not result.applied:
+            raise RuntimeError(result.detail)
+        target_id = (
+            runtime.backend._pane_id_from_dock(target) if target is not None else None
+        )
+        if target_id in runtime.model.panes and runtime.model.is_pane_placed(target_id):
+            result = runtime.model.split(pane_id, target_id, self._PeerDirection.BELOW)
+            if not result.applied:
+                raise RuntimeError(result.detail)
+        self._reconcilePeerChrome(runtime.frame_windows.values())
+        self._refreshWorkspaceAffiliation()
+
+    def _restoreWorkspaceTools(self, owner):
+        record = self._peerWorkspacePersistenceLoad.state.workspaces.get(str(owner), {})
+        manager = pyzo.toolManager.for_workspace(owner)
+        for tool_id in record.get("session", {}).get("loaded_tools", []):
+            if manager.getTool(tool_id) is None:
+                manager.loadTool(tool_id)
+
+    def _workspaceSessionFor(self, runtime):
+        from spikes.peer_frames.workspace_session import WorkspaceSessionService
+
+        return WorkspaceSessionService(
+            runtime.model,
+            lambda: runtime.frame_windows,
+            lambda: pyzo.toolManager.for_workspace(runtime.identity).getLoadedTools(),
+            lambda values: self._restoreToolsForWorkspace(runtime.identity, values),
+        )
+
+    def _restoreToolsForWorkspace(self, owner, values):
+        manager = pyzo.toolManager.for_workspace(owner)
+        current = set(manager.getLoadedTools())
+        target = set(values)
+        for tool_id in current - target:
+            manager.closeTool(tool_id)
+        for tool_id in target - current:
+            manager.loadTool(tool_id)
+
     def _peerRuntimeFrameWindows(self):
         runtime = self._peerActiveRuntime()
         runtime.backend._refresh_live_frame_windows()
@@ -2337,6 +2414,7 @@ class MainWindow(_ApplicationHostBase):
             window.raise_()
             window.activateWindow()
         self._reconcilePeerChrome(runtime.frame_windows.values())
+        self._refreshWorkspaceAffiliation()
         return result
 
     def _createPeerWorkspace(self, name="Workspace", persistence_location=None):
@@ -2453,7 +2531,35 @@ class MainWindow(_ApplicationHostBase):
                     self.statusBar().updateCursorInfo(pyzo.editors.getCurrentEditor())
                 return
 
-    def _togglePeerStatusBar(self, _context):
+    def _setActiveWorkspaceStatusVisible(self, visible):
+        owner = self._peerWorkspaces.active_workspace_id
+        if owner is not None:
+            pyzo.workspaceContext.context(owner).config.view.showStatusbar = bool(visible)
+            self._peerStatusProjector.refresh()
+
+    def _workspaceStatusVisible(self, owner):
+        service = getattr(pyzo, "workspaceContext", None)
+        if service is not None and owner is not None:
+            return bool(service.context(owner).config.view.showStatusbar)
+        return self._peerStatusState.snapshot.visible
+
+    def _peerFrameStatusVisible(self, frame, fallback):
+        service = getattr(pyzo, "workspaceContext", None)
+        if service is None:
+            return fallback
+        for owner in self._peerRuntimeCatalog.identities:
+            runtime = self._peerRuntimeCatalog.runtime(owner)
+            if frame in runtime.frame_windows.values():
+                return self._workspaceStatusVisible(owner)
+        return False
+
+    def _togglePeerStatusBar(self, context):
+        service = getattr(pyzo, "workspaceContext", None)
+        if service is not None and context is not None and context.workspace_id is not None:
+            configuration = service.context(context.workspace_id).config
+            configuration.view.showStatusbar = not configuration.view.showStatusbar
+            self._peerStatusProjector.refresh()
+            return
         visible = not self.statusBar().isVisible()
         pyzo.config.view.showStatusbar = visible
         self.statusBar().setVisible(visible)
@@ -2579,6 +2685,8 @@ class MainWindow(_ApplicationHostBase):
         dock_manager = backend.manager if runtime is not None else backend
         dock = self._QtAds.CDockWidget(dock_manager, "Untitled")
         dock.setObjectName(f"pyzo-editor-dock-{serial}")
+        if runtime is not None:
+            dock._workspaceContextOwner = runtime.identity
         host = self._EditorTabs(dock)
         host.setObjectName(f"pyzo-editor-host-{serial}")
         dock.setWidget(host)
@@ -2598,10 +2706,7 @@ class MainWindow(_ApplicationHostBase):
             if target_dock is not None:
                 pane_id = backend._pane_id_from_dock(dock)
                 target_id = self._peerBackend._pane_id_from_dock(target_dock)
-                if (
-                    target_id in workspace.panes
-                    and workspace.is_pane_placed(target_id)
-                ):
+                if target_id in workspace.panes and workspace.is_pane_placed(target_id):
                     result = workspace.tab(pane_id, target_id)
                     if not result.applied:
                         self._logPeerDefaultFrameError(
@@ -3385,10 +3490,10 @@ class MainWindow(_ApplicationHostBase):
         result = workspace.update_pane_title(pane_id, title)
         if not result.applied:
             raise RuntimeError(result.detail)
+        self._refreshWorkspaceAffiliation()
         window = dock.floatingDockContainer()
         if window is not None and (
-            len(window.dockWidgets()) == 1
-            or workspace.active_pane_id == pane_id
+            len(window.dockWidgets()) == 1 or workspace.active_pane_id == pane_id
         ):
             self._projectPeerFrameMetadata(dock, icon)
 
@@ -3407,7 +3512,14 @@ class MainWindow(_ApplicationHostBase):
         window = dock.floatingDockContainer()
         if pane is None or window is None:
             return
-        window.setWindowTitle(pane.title)
+        name = self._peerWorkspaces.descriptor(owner).name
+        window._workspaceContextOwner = owner
+        window.setWindowTitle(
+            f"{pane.title} · {name}"
+            if len(self._peerWorkspaces.workspace_ids) > 1
+            else pane.title
+        )
+        self._refreshWorkspaceAffiliation()
         if icon is None:
             host = next(
                 (
@@ -3423,6 +3535,8 @@ class MainWindow(_ApplicationHostBase):
         window.setWindowIcon(icon)
 
     def _removeEditorHost(self, host):
+        host._findReplace._timerAutoHide.stop()
+        host._findReplace._timerBeginEnd.stop()
         runtime = self._peerRuntimeForEditorHost(host)
         hosts = runtime.editor_hosts if runtime is not None else self._editorHosts
         dock = hosts.pop(host, None)
@@ -3472,6 +3586,8 @@ class MainWindow(_ApplicationHostBase):
         manager = runtime.backend.manager if runtime is not None else self._dockManager
         dock = self._QtAds.CDockWidget(manager, "Shell")
         dock.setObjectName(f"pyzo-shell-dock-{suffix}")
+        if runtime is not None:
+            dock._workspaceContextOwner = runtime.identity
         host = self._ShellStackWidget(dock)
         host.setObjectName(f"pyzo-shell-host-{suffix}")
         features = dock.DockWidgetFeature
@@ -3949,8 +4065,18 @@ class MainWindow(_ApplicationHostBase):
 
     def _cleanupRemainingPeerTools(self):
         errors = []
-        for toolname in tuple(pyzo.toolManager.getLoadedTools()):
-            tool = pyzo.toolManager.getTool(toolname)
+        catalog = pyzo.toolManager
+        managers = (
+            tuple(catalog.managers.values()) if hasattr(catalog, "managers") else (catalog,)
+        )
+        for manager in managers:
+            self._cleanupWorkspaceTools(manager, errors)
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def _cleanupWorkspaceTools(self, manager, errors):
+        for toolname in tuple(manager.getLoadedTools()):
+            tool = manager.getTool(toolname)
             if hasattr(tool, "cleanUp"):
                 try:
                     tool.cleanUp()
@@ -3966,7 +4092,7 @@ class MainWindow(_ApplicationHostBase):
         for thread in threading.enumerate():
             if hasattr(thread, "stop"):
                 try:
-                    thread.stop(0.1)
+                    thread.stop(timeout=0.1)
                 except Exception as error:
                     errors.append(f"{thread.name}: {error}")
         if errors:
@@ -5136,15 +5262,13 @@ class MainWindow(_ApplicationHostBase):
         )
         if not result.applied:
             raise RuntimeError(result.detail)
-        result = workspace.create_frame(
-            pane_id, f"pyzo-frame-{pane_id}"
-        )
+        result = workspace.create_frame(pane_id, f"pyzo-frame-{pane_id}")
         if not result.applied:
             raise RuntimeError(result.detail)
         dock.setWindowTitle(title)
-        backend.frame_windows[f"pyzo-frame-{pane_id}"].setWindowTitle(
-            title
-        )
+        window = backend.frame_windows[f"pyzo-frame-{pane_id}"]
+        window._workspaceContextOwner = runtime.identity
+        self._refreshWorkspaceAffiliation()
 
     def _removePeerDock(self, dock):
         runtime = next(
@@ -5576,7 +5700,7 @@ class MainWindow(_ApplicationHostBase):
         for thread in threading.enumerate():
             if hasattr(thread, "stop"):
                 try:
-                    thread.stop(0.1)
+                    thread.stop(timeout=0.1)
                 except Exception:
                     pass
 

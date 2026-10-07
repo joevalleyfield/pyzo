@@ -17,6 +17,7 @@ import gc
 from pyzo.qt import QtCore, QtGui, QtWidgets
 
 import pyzo
+from pyzo.core.workspaceContext import config_for, context_for
 from pyzo.core.compactTabWidget import CompactTabWidget
 from pyzo.core.editor import createEditor
 from pyzo.core.baseTextCtrl import normalizePath
@@ -285,9 +286,7 @@ class FindReplaceWidget(QtWidgets.QFrame):
 
             # Add previous button
             self._findPrev = ToolButtonWithShiftClick(self)
-            t = translate(
-                "search", "Previous ::: Find previous occurrence of the pattern."
-            )
+            t = translate("search", "Previous ::: Find previous occurrence of the pattern.")
             self._findPrev.setText(" <- ")
             self._findPrev.setToolTip(t.tt)
 
@@ -355,9 +354,7 @@ class FindReplaceWidget(QtWidgets.QFrame):
             vsubLayout.addWidget(self._caseCheck, 0)
 
             # Add regexp checkbox
-            t = translate(
-                "search", "RegExp ::: Find/Replace using regular expressions."
-            )
+            t = translate("search", "RegExp ::: Find/Replace using regular expressions.")
             self._regExp = QtWidgets.QCheckBox(t, self)
             self._regExp.setToolTip(t.tt)
             vsubLayout.addWidget(self._regExp, 0)
@@ -433,13 +430,13 @@ class FindReplaceWidget(QtWidgets.QFrame):
             w.stateChanged.connect(self.resetSearchResults)
 
         # init case and regexp
-        self._caseCheck.setChecked(bool(pyzo.config.state.find_matchCase))
-        self._regExp.setChecked(bool(pyzo.config.state.find_regExp))
-        self._wholeWord.setChecked(bool(pyzo.config.state.find_wholeWord))
-        self._autoHide.setChecked(bool(pyzo.config.state.find_autoHide))
+        self._caseCheck.setChecked(bool(config_for(self).state.find_matchCase))
+        self._regExp.setChecked(bool(config_for(self).state.find_regExp))
+        self._wholeWord.setChecked(bool(config_for(self).state.find_wholeWord))
+        self._autoHide.setChecked(bool(config_for(self).state.find_autoHide))
 
         # show or hide?
-        if pyzo.config.state.find_show:
+        if config_for(self).state.find_show:
             self.show()
         else:
             self.hide()
@@ -449,7 +446,7 @@ class FindReplaceWidget(QtWidgets.QFrame):
 
     def autoHideTimerCallback(self):
         """Check whether we should hide the tool."""
-        timeout = pyzo.config.advanced.find_autoHide_timeout
+        timeout = config_for(self).advanced.find_autoHide_timeout
         if self._autoHide.isChecked():
             if time.time() - self._timerAutoHide_t0 > timeout:  # seconds
                 # Hide if editor has focus
@@ -1119,7 +1116,7 @@ class EditorTabs(QtWidgets.QWidget):
         # spacing of widgets
         self._boxLayout.setSpacing(0)
         # set margins
-        margin = pyzo.config.view.widgetMargin
+        margin = config_for(self).view.widgetMargin
         self._boxLayout.setContentsMargins(margin, margin, margin, margin)
         # apply
         self.setLayout(self._boxLayout)
@@ -1139,7 +1136,7 @@ class EditorTabs(QtWidgets.QWidget):
     @property
     def _fileDialogOptions(self):
         options = QtWidgets.QFileDialog.Option(0)
-        if not pyzo.config.advanced.useNativeFileDialogs:
+        if not config_for(self).advanced.useNativeFileDialogs:
             options |= QtWidgets.QFileDialog.Option.DontUseNativeDialog
         return options
 
@@ -1340,7 +1337,7 @@ class EditorTabs(QtWidgets.QWidget):
 
         # load
         for filename in filenames:
-            pyzo.editors.loadFile(filename)
+            context_for(self).editors.loadFile(filename)
 
     def openDir(self):
         """Create a dialog for the user to select a directory."""
@@ -1477,7 +1474,7 @@ class EditorTabs(QtWidgets.QWidget):
             return
 
         # get extensions
-        extensions = pyzo.config.advanced.fileExtensionsToLoadFromDir
+        extensions = config_for(self).advanced.fileExtensionsToLoadFromDir
         extensions = extensions.replace(",", " ").replace(";", " ")
         extensions = ["." + a.lstrip(".").strip() for a in extensions.split(" ")]
 
@@ -1552,7 +1549,7 @@ class EditorTabs(QtWidgets.QWidget):
         else:
             startdir, startfilename = self._lastpath, None
             # Try the file browser to suggest a path
-            fileBrowser = pyzo.toolManager.getTool("pyzofilebrowser")
+            fileBrowser = context_for(self).toolManager.getTool("pyzofilebrowser")
             if fileBrowser:
                 startdir = fileBrowser.getDefaultSavePath()
             if not startdir:
@@ -1807,20 +1804,20 @@ class EditorTabs(QtWidgets.QWidget):
     def saveEditorState(self):
         """Save the editor's state configuration."""
         fr = self._findReplace
-        pyzo.config.state.find_matchCase = fr._caseCheck.isChecked()
-        pyzo.config.state.find_regExp = fr._regExp.isChecked()
-        pyzo.config.state.find_wholeWord = fr._wholeWord.isChecked()
-        pyzo.config.state.find_autoHide = fr._autoHide.isChecked()
-        pyzo.config.state.find_show = fr.isVisible()
+        config_for(self).state.find_matchCase = fr._caseCheck.isChecked()
+        config_for(self).state.find_regExp = fr._regExp.isChecked()
+        config_for(self).state.find_wholeWord = fr._wholeWord.isChecked()
+        config_for(self).state.find_autoHide = fr._autoHide.isChecked()
+        config_for(self).state.find_show = fr.isVisible()
         #
-        pyzo.config.state.editorState2 = self._getCurrentOpenFilesAsSsdfList()
+        config_for(self).state.editorState2 = self._getCurrentOpenFilesAsSsdfList()
 
     def restoreEditorState(self):
         """Restore the editor's state configuration."""
 
         # Restore opened editors
-        if pyzo.config.state.editorState2:
-            ok = self._setCurrentOpenFilesAsSsdfList(pyzo.config.state.editorState2)
+        if config_for(self).state.editorState2:
+            ok = self._setCurrentOpenFilesAsSsdfList(config_for(self).state.editorState2)
             if not ok:
                 self.newFile()
         else:

@@ -264,6 +264,7 @@ class PyzoInterpreter:
         startup_info["version"] = tuple(sys.version_info)
         startup_info["keywords"] = keyword.kwlist
         startup_info["softkeywords"] = getattr(keyword, "softkwlist", [])
+        startup_info["workspaceDebuggerSelection"] = "independent"
         # Update startup info, we update again at the end of this method
         self.context._stat_startup.send(startup_info.copy())
 
@@ -292,9 +293,7 @@ class PyzoInterpreter:
         else:
             NBITS = 8 * struct.calcsize("P")
             plat = "%s (%i bits)" % (sys.platform, NBITS)
-        printDirect(
-            "%s %s on %s.\n" % (thename, sys.version.split("[")[0].rstrip(), plat)
-        )
+        printDirect("%s %s on %s.\n" % (thename, sys.version.split("[")[0].rstrip(), plat))
 
         # Integrate GUI
         guiName, guiError = self._integrate_gui(startup_info)
@@ -360,9 +359,7 @@ class PyzoInterpreter:
         # Notify the running of the script
         if self._scriptToRunOnStartup:
             printDirect(
-                '\x1b[0;33mRunning script: "'
-                + self._scriptToRunOnStartup
-                + '"\x1b[0m\n'
+                '\x1b[0;33mRunning script: "' + self._scriptToRunOnStartup + '"\x1b[0m\n'
             )
 
         # Prevent app nap on OSX 9.2 and up
@@ -373,9 +370,7 @@ class PyzoInterpreter:
                 """extracts the leading number parts of a version string to a tuple
                 e.g.: "123.45ew6.7x.dev8" --> (123, 45, 7)
                 """
-                return tuple(
-                    int(s) for s in re.findall(r"\.(\d+)", "." + version_string)
-                )
+                return tuple(int(s) for s in re.findall(r"\.(\d+)", "." + version_string))
 
             parsev = parse_version_crudely
             if parsev(platform.mac_ver()[0]) >= parsev("10.9"):

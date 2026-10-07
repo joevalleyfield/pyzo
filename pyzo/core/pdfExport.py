@@ -1,6 +1,7 @@
 import os
 import sys
 import pyzo
+from pyzo.core.workspaceContext import config_for
 from pyzo import translate
 from pyzo.qt import QtCore, QtGui, QtWidgets, QtPrintSupport
 
@@ -30,9 +31,7 @@ class PdfExport(QtWidgets.QDialog):
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
 
-        self._chkLineNumbers = QtWidgets.QCheckBox(
-            "Print line number", self, checked=True
-        )
+        self._chkLineNumbers = QtWidgets.QCheckBox("Print line number", self, checked=True)
 
         self._currentEditor = pyzo.editors.getCurrentEditor()
         self._editor = pyzo.core.editor.PyzoEditor("")
@@ -41,7 +40,7 @@ class PdfExport(QtWidgets.QDialog):
         self._sliderZoom.setMinimum(-10)
         self._sliderZoom.setMaximum(10)
         self._sliderZoom.setTickInterval(1)
-        self._sliderZoom.setValue(pyzo.config.view.zoom)
+        self._sliderZoom.setValue(config_for(self).view.zoom)
         self._lblZoom = QtWidgets.QLabel()
         self._updateZoomLabel()
         self._sliderZoom.valueChanged.connect(self._updateZoomLabel)
@@ -97,7 +96,7 @@ class PdfExport(QtWidgets.QDialog):
     def _updateTemporaryEditor(self):
         """update the temporary editor for preview and export"""
 
-        self._editor.setZoom(pyzo.config.view.zoom + self._sliderZoom.value())
+        self._editor.setZoom(config_for(self).view.zoom + self._sliderZoom.value())
 
         if self._chkSyntaxHighlighting.isChecked():
             parser = self._currentEditor.parser().name()
@@ -157,7 +156,7 @@ class PdfExport(QtWidgets.QDialog):
     def _exportPdf(self):
         """Exports the code as pdf, and opens file manager"""
         options = QtWidgets.QFileDialog.Option(0)
-        if not pyzo.config.advanced.useNativeFileDialogs:
+        if not config_for(self).advanced.useNativeFileDialogs:
             options |= QtWidgets.QFileDialog.Option.DontUseNativeDialog
         filename, selectedFilter = QtWidgets.QFileDialog.getSaveFileName(
             None, "Export PDF", os.path.expanduser("~"), "*.pdf", options=options

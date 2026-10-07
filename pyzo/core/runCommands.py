@@ -107,6 +107,24 @@ class RunCommandService(QtCore.QObject):
         self._mainEditor = None
         self._mainChanged = lambda: None
 
+    def _config_for(self, editor):
+        import pyzo
+
+        if getattr(pyzo, "workspaceContext", None) is None:
+            return self._config
+        from .workspaceContext import config_for
+
+        return config_for(editor)
+
+    def _history_for(self, editor):
+        import pyzo
+
+        if getattr(pyzo, "workspaceContext", None) is None:
+            return self._commandHistory
+        from .workspaceContext import history_for
+
+        return history_for(editor)
+
     def set_selection_execution(self, service):
         """Install workspace routing for all editor execution commands."""
         self._selectionExecution = service
@@ -186,9 +204,7 @@ class RunCommandService(QtCore.QObject):
         run_cursor.setPosition(screen_cursor.selectionStart())
         run_cursor.movePosition(run_cursor.MoveOperation.StartOfBlock)
         first_line = run_cursor.blockNumber()
-        run_cursor.setPosition(
-            screen_cursor.selectionEnd(), run_cursor.MoveMode.KeepAnchor
-        )
+        run_cursor.setPosition(screen_cursor.selectionEnd(), run_cursor.MoveMode.KeepAnchor)
         if not (screen_cursor.hasSelection() and run_cursor.atBlockStart()):
             run_cursor.movePosition(
                 run_cursor.MoveOperation.EndOfBlock, run_cursor.MoveMode.KeepAnchor
@@ -214,7 +230,7 @@ class RunCommandService(QtCore.QObject):
             code = selected_text.replace("\u2029", "\n").strip()
 
             def send(shell):
-                self._commandHistory.append(code)
+                self._history_for(editor).append(code)
                 shell.executeCommand(code + "\n")
         else:
             code = run_cursor.selectedText().replace("\u2029", "\n")
@@ -375,7 +391,11 @@ class RunCommandService(QtCore.QObject):
             if execution.validate_file(provenance, source) and execution.dispatch(
                 provenance,
                 lambda shell: shell.executeCode(
-                    text, filename, changeDir=self._config.settings.changeDirOnFileExec
+                    text,
+                    filename,
+                    changeDir=self._config_for(
+                        invoking_editor
+                    ).settings.changeDirOnFileExec,
                 ),
             ):
                 return provenance
@@ -393,7 +413,7 @@ class RunCommandService(QtCore.QObject):
             shell.executeCode(
                 text,
                 filename,
-                changeDir=self._config.settings.changeDirOnFileExec,
+                changeDir=self._config_for(editor).settings.changeDirOnFileExec,
             )
 
     def _show_what_to_execute(self, editor, run_cursor=None):
