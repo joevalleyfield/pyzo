@@ -455,6 +455,21 @@ class PyzoEditor(BaseTextCtrl):
         return super().focusInEvent(event)
 
     def _checkAndHandleExternalFileModifications(self):
+        application = getattr(pyzo, "application", None)
+        documents = getattr(application, "documents", None)
+        view_id = getattr(self, "_peerViewIdentity", None)
+
+        def is_current():
+            return view_id is None or (
+                documents is not None
+                and documents.is_bound(self)
+                and self._peerViewIdentity == view_id
+            )
+
+        # Focus queues this callback; its view may retire before GUI dispatch
+        # or while a reload dialog runs a nested event loop.
+        if not is_current():
+            return
         if not self._checkFileModified():
             return
 
@@ -472,6 +487,8 @@ class PyzoEditor(BaseTextCtrl):
 
             # get user's decision
             dlg.exec()
+            if not is_current():
+                return
             doReload = dlg.clickedButton() == btnReload
         else:
             if config_for(self).advanced.autoReloadFilesInEditor:
@@ -498,6 +515,8 @@ class PyzoEditor(BaseTextCtrl):
 
                 # get user's decision
                 dlg.exec()
+                if not is_current():
+                    return
                 if dlg.clickedButton() == btnReloadThisTime:
                     doReload = True
                 elif dlg.clickedButton() == btnAlwaysReload:
@@ -514,6 +533,8 @@ class PyzoEditor(BaseTextCtrl):
                 else:
                     doReload = False
 
+        if not is_current():
+            return
         if doReload:
             self.reload()
         else:

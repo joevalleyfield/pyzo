@@ -697,6 +697,7 @@ class PeerApplicationController(QtCore.QObject):
         reopen_retained_view=None,
         resolve_legacy_recovery=None,
         ensure_recovery_selection=None,
+        open_external_file=None,
     ):
         super().__init__(parent)
         self.workspace = WorkspaceAccess(workspace)
@@ -722,6 +723,7 @@ class PeerApplicationController(QtCore.QObject):
         self.reopen_retained_view = reopen_retained_view
         self.resolve_legacy_recovery = resolve_legacy_recovery
         self.ensure_recovery_selection = ensure_recovery_selection
+        self.open_external_file = open_external_file
         context_owner = workspace_coordinator or workspace
         self.active_peer = ActivePeerLookup(context_owner, frame_window)
         self.dialogs = DialogParentAccess(self.active_peer)

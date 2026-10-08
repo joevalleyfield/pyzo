@@ -44,6 +44,14 @@ class Server(RequestServer):
             return reply
 
 
+def _open_file(filename):
+    """Resolve the application at GUI dispatch, after any queued focus drift."""
+    application = getattr(pyzo, "application", None)
+    if application is not None:
+        return application.open_external_file(filename)
+    return pyzo.editors.loadFile(filename)
+
+
 def handle_command(command, arg):
     """Function that handles all pyzo commands.
     This gets called either from the server, or from the code that
@@ -69,7 +77,7 @@ def handle_command(command, arg):
         # Open a file in the editor
         if not arg:
             return "The open command requires a filename."
-        pyzo.callLater(pyzo.editors.loadFile, arg)
+        pyzo.callLater(_open_file, arg)
         return "Opened file {!r}".format(arg)
 
     elif command == "new":
@@ -107,7 +115,7 @@ def handle_command(command, arg):
         if not pyzo.editors:
             return "Still warming up ..."
         else:
-            pyzo.callLater(pyzo.editors.loadFile, fname)
+            pyzo.callLater(_open_file, fname)
             return "Try opening file {!r}".format(fname)
 
     # We should always return. So if we get here, it is a bug.

@@ -1281,6 +1281,7 @@ class MainWindow(_ApplicationHostBase):
                 reopen_retained_view=self._reopenPeerRetainedView,
                 resolve_legacy_recovery=self.resolvePeerLegacyRecovery,
                 ensure_recovery_selection=self._ensurePeerRecoverySelection,
+                open_external_file=self._openExternalFile,
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -1944,7 +1945,10 @@ class MainWindow(_ApplicationHostBase):
             for candidate in self._peerRuntimeCatalog.identities
             if candidate != identity
         )
+        previous_closing = getattr(self, "_peerClosingWorkspace", False)
+        previous_ids = getattr(self, "_peerClosingWorkspaceIds", frozenset())
         self._peerClosingWorkspace = True
+        self._peerClosingWorkspaceIds = previous_ids | {identity}
         try:
             result = runtime.model.preflight_shutdown(self._resolvePeerClose)
             if not result.applied:
@@ -1972,7 +1976,8 @@ class MainWindow(_ApplicationHostBase):
                 if not result.applied:
                     return result
         finally:
-            self._peerClosingWorkspace = False
+            self._peerClosingWorkspace = previous_closing
+            self._peerClosingWorkspaceIds = previous_ids
         removed = self._peerWorkspaces.remove_workspace(identity)
         if not removed.applied:
             return removed
@@ -2402,6 +2407,75 @@ class MainWindow(_ApplicationHostBase):
             if window is not None:
                 return window
         return None
+
+    def _externalFileOpenAllowed(self):
+        shutdown = getattr(self, "_peerShutdownCoordinator", None)
+        return (
+            not getattr(self, "_peerApplicationExitRequested", False)
+            and getattr(shutdown, "phase", "idle") == "idle"
+        )
+
+    def _peerIngressWorkspaceEligible(self, identity):
+        if (
+            identity not in self._peerWorkspaces.workspace_ids
+            or identity in getattr(self, "_peerClosingWorkspaceIds", ())
+            or str(identity) in self._peerWorkspaceRestoreFailures
+        ):
+            return False
+        try:
+            runtime = self._peerRuntimeCatalog.runtime(identity)
+        except KeyError:
+            return False
+        return not runtime._disposed and not runtime.model.shutdown_requested
+
+    def _openExternalFile(self, filename):
+        """Open an ingress file in one explicitly selected live workspace."""
+        if not self._externalFileOpenAllowed():
+            pyzo.application.metadata.show_status(
+                "Cannot open file while Pyzo is closing.", 5000
+            )
+            return None
+        owner = self._peerWorkspaces.external_open_workspace(
+            self._peerIngressWorkspaceEligible
+        )
+        if owner is None:
+            if self._peerWorkspaces.workspace_ids:
+                pyzo.application.metadata.show_status(
+                    "Cannot open file: no loaded workspace is available.", 5000
+                )
+                return None
+            owner = self._createPeerWorkspace()
+        context = self._peerWorkspaces.resolve_workspace_context(owner)
+        self._activatePeerWorkspace(owner)
+        if not self._ensurePeerRecoverySelection(filename, workspace_id=owner):
+            return None
+        # Recovery selection may run a nested Qt event loop. Never redirect an
+        # accepted selection to an owner closed/reloaded during that dialogue.
+        if (
+            not self._externalFileOpenAllowed()
+            or not self._peerIngressWorkspaceEligible(owner)
+            or not self._peerWorkspaces.context_is_current(context)
+        ):
+            pyzo.application.metadata.show_status(
+                "Cannot open file: the selected workspace is no longer available.",
+                5000,
+            )
+            return None
+        self._activatePeerWorkspace(owner)
+        path = os.path.normcase(os.path.realpath(os.path.abspath(filename)))
+        for document_id in self._peerDocumentResources.document_ids:
+            resource = self._peerDocumentResources.resource(document_id)
+            if resource.path and os.path.normcase(
+                os.path.realpath(os.path.abspath(resource.path))
+            ) == path:
+                # Native file construction has no durable identity. Reuse the
+                # retained constructor so another owner's unsaved text and undo
+                # remain authoritative, even if the file is missing on disk.
+                self._peerMainEditor(document_id, owner)
+                return pyzo.workspaceContext.context(owner).editors.loadFile(
+                    resource.path
+                )
+        return pyzo.workspaceContext.context(owner).editors.loadFile(filename)
 
     def _activatePeerWorkspace(self, workspace_id):
         result = self._peerWorkspaces.activate_workspace(workspace_id)
@@ -3144,7 +3218,7 @@ class MainWindow(_ApplicationHostBase):
             for identity in migration.get("blocked_documents", [])
         }
 
-    def _ensurePeerRecoverySelection(self, filename):
+    def _ensurePeerRecoverySelection(self, filename, *, workspace_id=None):
         path = os.path.realpath(os.path.abspath(filename))
         loaded = self._peerWorkspaceStore.load()
         legacy = loaded.state.application_state.get("legacy_config", {})
@@ -3184,7 +3258,9 @@ class MainWindow(_ApplicationHostBase):
                     # A valid current authority takes precedence over archived
                     # divergent candidates; selection must not overwrite it.
                     return True
-                return self.resolvePeerLegacyRecovery(document_id)
+                return self.resolvePeerLegacyRecovery(
+                    document_id, workspace_id=workspace_id
+                )
         # A selected but closed buffer must reopen retained text, never disk.
         metadata = self._peerDocumentResources._persistence_extensions.get(
             "legacy_recovery_selections", {}
@@ -3200,7 +3276,7 @@ class MainWindow(_ApplicationHostBase):
             descriptors = self._peerDocumentResources.retained_views_for_document(
                 document_id
             )
-            owner = self._peerWorkspaces.active_workspace_id
+            owner = workspace_id or self._peerWorkspaces.active_workspace_id
             if not descriptors or owner is None:
                 return False
             self._reopenPeerRetainedView(descriptors[0].view_id, workspace_id=owner)
@@ -3298,8 +3374,15 @@ class MainWindow(_ApplicationHostBase):
             return None
         return document_id, versions.currentIndex()
 
-    def resolvePeerLegacyRecovery(self, document_id=None, candidate_index=None):
+    def resolvePeerLegacyRecovery(
+        self, document_id=None, candidate_index=None, *, workspace_id=None
+    ):
         """Publish an explicit choice before making it a live editable buffer."""
+        owner = workspace_id or self._peerWorkspaces.active_workspace_id
+        context = (
+            self._peerWorkspaces.resolve_workspace_context(owner)
+            if owner is not None else None
+        )
         choices = self.legacyPeerRecoveryChoices()
         if candidate_index is None:
             chooser = getattr(
@@ -3309,10 +3392,14 @@ class MainWindow(_ApplicationHostBase):
             if selected is None:
                 return False
             document_id, candidate_index = selected
-        owner = self._peerWorkspaces.active_workspace_id
-        if owner is None:
+        if (
+            context is None
+            or not self._externalFileOpenAllowed()
+            or not self._peerIngressWorkspaceEligible(owner)
+            or not self._peerWorkspaces.context_is_current(context)
+        ):
             self._peerStatusService.showMessage(
-                "Open a workspace before recovering a buffer."
+                "The selected workspace is unavailable; recovery choices remain retained."
             )
             return False
         if (
@@ -4105,7 +4192,11 @@ class MainWindow(_ApplicationHostBase):
 
     def _requestPeerApplicationExit(self, disposition):
         self._peerApplicationExitRequested = True
-        return self._peerShutdownCoordinator.request(disposition)
+        try:
+            return self._peerShutdownCoordinator.request(disposition)
+        finally:
+            if self._peerShutdownCoordinator.phase == "idle":
+                self._peerApplicationExitRequested = False
 
     def _onPeerApplicationStateChanged(self, state):
         if state == QtCore.Qt.ApplicationState.ApplicationActive:
