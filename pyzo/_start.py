@@ -346,8 +346,7 @@ def start():
                     print(host._peerRunDebugSmokeError, file=sys.stderr)
                 error = getattr(host, "_peerRunDebugSmokeError", None)
                 if error:
-                    timer.stop()
-                    QtWidgets.qApp.exit(1)
+                    abort_test_run(error)
                     return
             if time.time() - startTime > testTimeout:
                 timer.stop()
@@ -366,7 +365,7 @@ def start():
                         ),
                         file=sys.stderr,
                     )
-                    QtWidgets.qApp.exit(1)
+                    abort_test_run("peer run/debug smoke timed out")
                     return
                 msg = "Stopping after {} s".format(dt)
                 print(msg)

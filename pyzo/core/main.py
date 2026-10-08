@@ -4416,7 +4416,12 @@ class MainWindow(_ApplicationHostBase):
         phase = state["phase"]
         if phase == "wait-shell":
             shell = pyzo.shells.getCurrentShell()
-            if shell is None or not shell._version:
+            if (
+                shell is None
+                or not shell._version
+                or shell._state != "Ready"
+                or not shell._context.connection_count
+            ):
                 return False
             fd, path = tempfile.mkstemp(prefix="pyzo-peer-debug-", suffix=".py")
             source = (
@@ -4689,7 +4694,12 @@ class MainWindow(_ApplicationHostBase):
                 "first_version": first_shell._version,
                 "second_version": second_shell._version,
             }
-            if not first_shell._version or not second_shell._version:
+            if not all(
+                candidate._version
+                and candidate._state == "Ready"
+                and candidate._context.connection_count
+                for candidate in (first_shell, second_shell)
+            ):
                 return False
             first_shell.executeCommand("peer_kernel_identity = 'first'\n")
             second_shell.executeCommand(
