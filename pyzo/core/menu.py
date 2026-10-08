@@ -634,8 +634,10 @@ class FileMenu(Menu):
         editor.lineEndings = value
 
     def _pdfExport(self):
-        dialog = PdfExport()
-        dialog.exec()
+        editor = context_for(self).editors.getCurrentEditor()
+        if editor is not None:
+            dialog = PdfExport(editor=editor, parent=editor)
+            dialog.exec()
 
 
 # todo: move to matching brace

@@ -606,7 +606,7 @@ class BaseTextCtrl(CodeEditor):
         # Get help tool
         hw = context_for(self).toolManager.getTool("pyzointeractivehelp")
         # Get the shell
-        shell = pyzo.shells.getCurrentShell()
+        shell = context_for(self).shells.getCurrentShell()
         # Both should exist
         from .nativeRequests import execution_service
 
@@ -642,10 +642,12 @@ class BaseTextCtrl(CodeEditor):
         if fullName is not None:
             self.processHelp(fullName, "autocomplete")
 
-    @staticmethod
-    def restoreHelp(source):
+    def restoreHelp(self, source):
         assert source in ("autocomplete", "calltip")
-        hw = pyzo.toolManager.getTool("pyzointeractivehelp")
+        try:
+            hw = context_for(self).toolManager.getTool("pyzointeractivehelp")
+        except (KeyError, RuntimeError):
+            return
         if hw:
             hw.helpFromExtension(None, source)
 

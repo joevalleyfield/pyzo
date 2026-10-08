@@ -16,6 +16,13 @@ from spikes.peer_frames.identity import ApplicationIdentity, IdentityKind
 from spikes.peer_frames.workspace_coordinator import WorkspaceCoordinator
 
 
+@pytest.fixture(scope="module", autouse=True)
+def qt_application():
+    from pyzo.qt import QtWidgets
+    app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    yield app
+
+
 @pytest.fixture
 def ingress_world(monkeypatch):
     coordinator = WorkspaceCoordinator()
@@ -46,11 +53,16 @@ def ingress_world(monkeypatch):
     for name in (
         "_externalFileOpenAllowed",
         "_peerIngressWorkspaceEligible",
+        "_externalCommandWorkspace",
+        "_newExternalFile",
+        "_startExternalShell",
         "_openExternalFile",
     ):
         setattr(main, name, getattr(MainWindow, name).__get__(main))
     application = SimpleNamespace(
         open_external_file=main._openExternalFile,
+        new_external_file=main._newExternalFile,
+        start_external_shell=main._startExternalShell,
         metadata=SimpleNamespace(show_status=lambda *args: statuses.append(args)),
     )
     monkeypatch.setattr(pyzo, "application", application, raising=False)
@@ -60,8 +72,10 @@ def ingress_world(monkeypatch):
         SimpleNamespace(
             context=lambda owner: SimpleNamespace(
                 editors=SimpleNamespace(
-                    loadFile=lambda filename: opened.append((owner, filename))
-                )
+                    loadFile=lambda filename: opened.append((owner, filename)),
+                    newFile=lambda: opened.append((owner, "new")),
+                ),
+                shells=SimpleNamespace(addShell=lambda info: opened.append((owner, info))),
             )
         ),
         raising=False,
@@ -396,3 +410,48 @@ def test_file_check_stops_after_modal_view_retirement(monkeypatch, dirty):
     )
     PyzoEditor._checkAndHandleExternalFileModifications(editor)
     assert not state["live"]
+
+
+@pytest.mark.parametrize('command', ['new', 'startexternalshell'])
+@pytest.mark.parametrize('state', ['focus', 'closing', 'all-ineligible', 'exit', 'empty'])
+def test_nonfile_ingress_resolves_eligible_owner_at_dispatch(
+    command_module, ingress_world, monkeypatch, command, state
+):
+    world=ingress_world
+    queue=[]
+    monkeypatch.setattr(pyzo,'callLater',lambda callback,*args:queue.append((callback,args)),raising=False)
+    # A queued peer command must never use either legacy manager.
+    monkeypatch.setattr(pyzo,'editors',object(),raising=False)
+    monkeypatch.setattr(pyzo,'shells',object(),raising=False)
+    info={'externalshell_callbackport':1234,'name':'external'}
+    command_module.handle_command(command,repr(info) if command=='startexternalshell' else '')
+    a,b,c=world.owners
+    world.coordinator.activate_workspace(b)
+    world.coordinator.activate_workspace(c)
+    if state=='closing':world.main._peerClosingWorkspaceIds.add(c)
+    if state=='all-ineligible':world.main._peerClosingWorkspaceIds.update(world.owners)
+    if state=='exit':world.main._peerShutdownCoordinator.phase='negotiating'
+    if state=='empty':
+        for owner in world.owners:world.coordinator.remove_workspace(owner)
+    callback,args=queue.pop()
+    callback(*args)
+    value='new' if command=='new' else info
+    if state in ('all-ineligible','exit'):
+        assert not world.opened and not world.created
+    else:
+        owner=world.created[0] if state=='empty' else b if state=='closing' else c
+        assert world.opened == [(owner,value)]
+        assert len(world.created)==(1 if state=='empty' else 0)
+
+
+@pytest.mark.parametrize('command', ['new', 'startexternalshell'])
+def test_legacy_nonfile_dispatch_resolves_current_manager(command_module, monkeypatch, command):
+    queue,opened=[],[]
+    monkeypatch.setattr(pyzo,'application',None,raising=False)
+    monkeypatch.setattr(pyzo,'callLater',lambda callback,*args:queue.append((callback,args)),raising=False)
+    info={'externalshell_callbackport':1234}
+    command_module.handle_command(command,repr(info) if command=='startexternalshell' else '')
+    monkeypatch.setattr(pyzo,'editors',SimpleNamespace(newFile=lambda:opened.append('new')),raising=False)
+    monkeypatch.setattr(pyzo,'shells',SimpleNamespace(addShell=opened.append),raising=False)
+    callback,args=queue.pop();callback(*args)
+    assert opened==(['new'] if command=='new' else [info])

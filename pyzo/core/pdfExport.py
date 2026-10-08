@@ -13,8 +13,8 @@ class PdfExport(QtWidgets.QDialog):
     and then the options chosen are applied by _updateTemporaryEditor()
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *, editor=None, parent=None):
+        super().__init__(parent)
 
         self.setWindowTitle(translate("menu dialog", "Pdf Export"))
 
@@ -33,8 +33,8 @@ class PdfExport(QtWidgets.QDialog):
 
         self._chkLineNumbers = QtWidgets.QCheckBox("Print line number", self, checked=True)
 
-        self._currentEditor = pyzo.editors.getCurrentEditor()
-        self._editor = pyzo.core.editor.PyzoEditor("")
+        self._currentEditor = editor if editor is not None else pyzo.editors.getCurrentEditor()
+        self._editor = pyzo.core.editor.PyzoEditor(self)
 
         self._sliderZoom = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._sliderZoom.setMinimum(-10)

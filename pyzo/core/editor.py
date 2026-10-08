@@ -597,8 +597,7 @@ class PyzoEditor(BaseTextCtrl):
         self._menu.popup(self.mapToGlobal(point) + QtCore.QPoint(0, 3))
 
     def _updateStatusBar(self):
-        editor = pyzo.editors.getCurrentEditor()
-        pyzo.metadata.cursor(editor)
+        pyzo.metadata.cursor(self)
 
     def dragMoveEvent(self, event):
         """Otherwise cursor can get stuck.
@@ -614,7 +613,7 @@ class PyzoEditor(BaseTextCtrl):
         """Drop files in the list."""
         if event.mimeData().hasUrls():
             # file: let the editorstack do the work.
-            pyzo.editors.dropEvent(event)
+            context_for(self).editors.dropEvent(event)
         else:
             # text: act normal
             super().dropEvent(event)
@@ -724,7 +723,7 @@ class PyzoEditor(BaseTextCtrl):
         # update title (in case of a rename)
         # Saving could be triggered for a non-active editor, e.g. when running the
         # main file as a script.
-        if self is pyzo.editors.getCurrentEditor():
+        if self is context_for(self).editors.getCurrentEditor():
             self.setTitleInMainWindow()
 
         # allow item to update its texts (no need: onModifiedChanged does this)
@@ -756,7 +755,7 @@ class PyzoEditor(BaseTextCtrl):
         self.gotoLine(linenr)
 
         # Trigger update of indentation and line ending in the "File" menu
-        pyzo.editors.onCurrentChanged()
+        context_for(self).editors.onCurrentChanged()
 
     def _expandSelectionToWholeBlocks(self):
         """expands the selection of the current text cursor to whole blocks

@@ -777,7 +777,7 @@ class FindReplaceWidget(QtWidgets.QFrame):
             cursor.endEditBlock()
 
     def _replaceInAllFiles(self):
-        for editor in pyzo.editors:
+        for editor in tuple(context_for(self).editors):
             self._replaceAll(editor)
 
 
@@ -1164,7 +1164,7 @@ class EditorTabs(QtWidgets.QWidget):
     def onCurrentChanged(self):
         self.currentChanged.emit()
         # Update status bar
-        editor = pyzo.editors.getCurrentEditor()
+        editor = self.getCurrentEditor()
         pyzo.metadata.cursor(editor)
         self._findReplace.resetSearchResults()
 
@@ -1406,11 +1406,16 @@ class EditorTabs(QtWidgets.QWidget):
                 return item
         return None  # file is not opened in any of the editor tabs
 
-    def loadFile(self, filename, updateTabs=True, ignoreFail=False):
+    def loadFile(self, filename, updateTabs=True, ignoreFail=False, *, _workspace_local=False):
         """Load the specified file.
         On success returns the item of the file, also if it was
         already open.
         """
+
+        if not filename:
+            return None
+        if pyzo.application is not None and not _workspace_local:
+            return context_for(self).editors.loadFile(filename, updateTabs, ignoreFail)
 
         # Note that by giving the name of a tempfile, we can select that
         # temp file.

@@ -67,7 +67,11 @@ class WorkspaceRuntime:
     @property
     def frame_windows(self):
         """Native frame lookup owned by this runtime."""
-
+        if self._disposed:
+            return {}
+        refresh = getattr(self.backend, "_refresh_live_frame_windows", None)
+        if refresh is not None:
+            refresh()
         return self.backend.frame_windows
 
     def dispose(self) -> None:

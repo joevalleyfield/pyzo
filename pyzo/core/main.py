@@ -1282,6 +1282,8 @@ class MainWindow(_ApplicationHostBase):
                 resolve_legacy_recovery=self.resolvePeerLegacyRecovery,
                 ensure_recovery_selection=self._ensurePeerRecoverySelection,
                 open_external_file=self._openExternalFile,
+                new_external_file=self._newExternalFile,
+                start_external_shell=self._startExternalShell,
             )
             pyzo.application = self._peerApplicationController
             pyzo.main = pyzo.application
@@ -1826,9 +1828,38 @@ class MainWindow(_ApplicationHostBase):
                 for view_id, pane_id in editor_views.items()
                 if view_id in current_views
             }
+            if set(pane_ids.values()) != {
+                pane_id
+                for pane_id, pane in workspace.panes.items()
+                if pane.kind is self._PeerPaneKind.EDITOR
+            }:
+                return self._PeerOperationResult(
+                    self._PeerOperationStatus.INVALID,
+                    "retained editor layout mapping is incomplete",
+                )
+            saved_panes = {
+                pane
+                for frame in saved["frames"]
+                for group in frame["groups"]
+                for pane in group["panes"]
+            }
+            saved_tools = session.get("tool_panes", {})
             for pane_id, pane in workspace.panes.items():
                 if pane.kind is self._PeerPaneKind.TOOL:
-                    pane_ids[pane_id] = pane_id
+                    tool_id = runtime.backend.docks[pane_id]._toolId
+                    # Primary/secondary pane prefixes can change on restart.
+                    # Older snapshots have no semantic tool map; recognize
+                    # only the two exact IDs assigned to this owner's tool.
+                    candidates = (
+                        saved_tools.get(tool_id),
+                        f"tool-{tool_id}",
+                        f"tool-{runtime.identity}-{tool_id}",
+                    )
+                    old_id = next(
+                        (value for value in candidates if value in saved_panes), None
+                    )
+                    if old_id is not None:
+                        pane_ids[old_id] = pane_id
             if set(pane_ids.values()) != set(workspace.panes):
                 return self._PeerOperationResult(
                     self._PeerOperationStatus.INVALID,
@@ -2142,7 +2173,7 @@ class MainWindow(_ApplicationHostBase):
                     window.geometry().width(),
                     window.geometry().height(),
                 ]
-                for frame_id, window in runtime.backend.frame_windows.items()
+                for frame_id, window in runtime.frame_windows.items()
             }
             previous["session"].setdefault("loaded_tools", [])
             previous["session"]["editor_views"] = {
@@ -2151,6 +2182,11 @@ class MainWindow(_ApplicationHostBase):
                 )
                 for host, dock in runtime.editor_hosts.items()
                 if host._tabs.currentItem() is not None
+            }
+            previous["session"]["tool_panes"] = {
+                dock._toolId: pane_id
+                for pane_id, dock in runtime.backend.docks.items()
+                if runtime.model.panes[pane_id].kind is self._PeerPaneKind.TOOL
             }
             previous["extensions"] = extensions
             workspaces[captured_id] = previous
@@ -2357,10 +2393,9 @@ class MainWindow(_ApplicationHostBase):
 
     def _restoreWorkspaceTools(self, owner):
         record = self._peerWorkspacePersistenceLoad.state.workspaces.get(str(owner), {})
-        manager = pyzo.toolManager.for_workspace(owner)
-        for tool_id in record.get("session", {}).get("loaded_tools", []):
-            if manager.getTool(tool_id) is None:
-                manager.loadTool(tool_id)
+        session = record.get("session", {})
+        if "loaded_tools" in session:
+            self._restoreToolsForWorkspace(owner, session["loaded_tools"])
 
     def _workspaceSessionFor(self, runtime):
         from spikes.peer_frames.workspace_session import WorkspaceSessionService
@@ -2428,11 +2463,11 @@ class MainWindow(_ApplicationHostBase):
             return False
         return not runtime._disposed and not runtime.model.shutdown_requested
 
-    def _openExternalFile(self, filename):
-        """Open an ingress file in one explicitly selected live workspace."""
+    def _externalCommandWorkspace(self):
+        """Select an eligible ingress owner at GUI dispatch."""
         if not self._externalFileOpenAllowed():
             pyzo.application.metadata.show_status(
-                "Cannot open file while Pyzo is closing.", 5000
+                "Cannot accept external command while Pyzo is closing.", 5000
             )
             return None
         owner = self._peerWorkspaces.external_open_workspace(
@@ -2441,12 +2476,29 @@ class MainWindow(_ApplicationHostBase):
         if owner is None:
             if self._peerWorkspaces.workspace_ids:
                 pyzo.application.metadata.show_status(
-                    "Cannot open file: no loaded workspace is available.", 5000
+                    "Cannot accept external command: no loaded workspace is available.", 5000
                 )
                 return None
             owner = self._createPeerWorkspace()
-        context = self._peerWorkspaces.resolve_workspace_context(owner)
         self._activatePeerWorkspace(owner)
+        return owner
+
+    def _newExternalFile(self):
+        owner = self._externalCommandWorkspace()
+        if owner is not None:
+            return pyzo.workspaceContext.context(owner).editors.newFile()
+
+    def _startExternalShell(self, info):
+        owner = self._externalCommandWorkspace()
+        if owner is not None:
+            return pyzo.workspaceContext.context(owner).shells.addShell(info)
+
+    def _openExternalFile(self, filename):
+        """Open an ingress file in one explicitly selected live workspace."""
+        owner = self._externalCommandWorkspace()
+        if owner is None:
+            return None
+        context = self._peerWorkspaces.resolve_workspace_context(owner)
         if not self._ensurePeerRecoverySelection(filename, workspace_id=owner):
             return None
         # Recovery selection may run a nested Qt event loop. Never redirect an

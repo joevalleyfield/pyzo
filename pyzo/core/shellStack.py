@@ -676,7 +676,7 @@ class DebugStack(QtWidgets.QToolButton):
             editor.setTextCursor(cursor)
         else:
             # focus on shell and not on an editor because there is no valid file
-            shell = pyzo.shells.getCurrentShell()
+            shell = self._contextShell()
             if shell:
                 shell.setFocus()
         return error

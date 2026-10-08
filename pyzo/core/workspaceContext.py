@@ -8,6 +8,7 @@ with their retained documents. No foreground swap mutates the global tree.
 from copy import deepcopy
 import base64
 import sys
+import os
 
 import pyzo
 from pyzo.qt import QtCore, QtWidgets
@@ -296,6 +297,29 @@ class LocalEditors(QtCore.QObject):
         return Find()
 
     def loadFile(self, filename, *args, **kwargs):
+        if not filename:
+            return None
+        main, owner = self.context.service.main, self.context.owner
+        if not main._externalFileOpenAllowed() or not main._peerIngressWorkspaceEligible(owner):
+            return None
+        epoch = main._peerWorkspaces.resolve_workspace_context(owner)
+        if not main._ensurePeerRecoverySelection(filename, workspace_id=owner):
+            return None
+        if (
+            not main._externalFileOpenAllowed()
+            or not main._peerIngressWorkspaceEligible(owner)
+            or not main._peerWorkspaces.context_is_current(epoch)
+        ):
+            return None
+        path = os.path.normcase(os.path.realpath(os.path.abspath(filename)))
+        for document_id in main._peerDocumentResources.document_ids:
+            resource = main._peerDocumentResources.resource(document_id)
+            if resource.path and os.path.normcase(
+                os.path.realpath(os.path.abspath(resource.path))
+            ) == path:
+                main._peerMainEditor(document_id, owner)
+                filename = resource.path
+                break
         # The global manager deduplicates across owners. A local tool must open
         # a local view of the shared document instead of activating a foreign one.
         for group in self.groups:
@@ -310,7 +334,7 @@ class LocalEditors(QtCore.QObject):
         )
         pyzo.editors.addGroup(group)
         self._active = group
-        item = group.loadFile(filename, *args, **kwargs)
+        item = group.loadFile(filename, *args, _workspace_local=True, **kwargs)
         pyzo.editors.setActiveGroup(group)
         return item
 

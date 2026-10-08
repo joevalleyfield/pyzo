@@ -124,6 +124,12 @@ class EditorGroupManager(QtCore.QObject):
         return item
 
     def loadFile(self, filename, updateTabs=True, ignoreFail=False):
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            from .workspaceContext import context_for
+
+            return context_for(self._activeGroup).editors.loadFile(
+                filename, updateTabs, ignoreFail
+            )
         application = getattr(pyzo, "application", None)
         ensure_selection = getattr(application, "ensure_recovery_selection", None)
         if ensure_selection is not None and not ensure_selection(filename):

@@ -52,6 +52,20 @@ def _open_file(filename):
     return pyzo.editors.loadFile(filename)
 
 
+def _new_file():
+    application = getattr(pyzo, "application", None)
+    if application is not None:
+        return application.new_external_file()
+    return pyzo.editors.newFile()
+
+
+def _start_external_shell(info):
+    application = getattr(pyzo, "application", None)
+    if application is not None:
+        return application.start_external_shell(info)
+    return pyzo.shells.addShell(info)
+
+
 def handle_command(command, arg):
     """Function that handles all pyzo commands.
     This gets called either from the server, or from the code that
@@ -82,7 +96,7 @@ def handle_command(command, arg):
 
     elif command == "new":
         # Open a new (temp) file in the editor
-        pyzo.callLater(pyzo.editors.newFile)
+        pyzo.callLater(_new_file)
         return "Created new file"
 
     elif command == "close":
@@ -105,7 +119,7 @@ def handle_command(command, arg):
         except Exception:
             answer = "invalid arguments"
         else:
-            pyzo.callLater(pyzo.shells.addShell, pyzo.util.zon.Dict(shell_config))
+            pyzo.callLater(_start_external_shell, pyzo.util.zon.Dict(shell_config))
             answer = "ok"
         return answer
 
