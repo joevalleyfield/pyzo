@@ -39,6 +39,7 @@ def show_workspace_capabilities(widget):
         widget, "Workspace effective settings", "\n".join(lines)
     )
 
+
 def buildMenus(menuBar):
     """
     Build all the menus
@@ -473,13 +474,17 @@ class FileMenu(Menu):
         self._items = []
 
         # Create indent menu
-        t = translate("menu", "Indentation ::: The indentation used of the current file.")
+        t = translate(
+            "menu", "Indentation ::: The indentation used of the current file."
+        )
         self._indentMenu = IndentationMenu(self, t)
 
         # Create parser menu
         from pyzo import codeeditor
 
-        t = translate("menu", "Syntax parser ::: The syntax parser of the current file.")
+        t = translate(
+            "menu", "Syntax parser ::: The syntax parser of the current file."
+        )
         self._parserMenu = GeneralOptionsMenu(self, t, self._setParser)
         self._parserMenu.setOptions(["Plain"] + codeeditor.Manager.getParserNames())
 
@@ -492,17 +497,18 @@ class FileMenu(Menu):
 
         # Bind to signal
         context_for(self).editors.currentChanged.connect(self.onEditorsCurrentChanged)
+        self.aboutToShow.connect(self.onEditorsCurrentChanged)
 
         # Build menu file management stuff
         self.addItem(
             translate("menu", "New ::: Create a new (or temporary) file."),
             icons.page_add,
-            context_for(self).editors.newFile,
+            lambda *args: context_for(self).editors.newFile(*args),
         )
         self.addItem(
             translate("menu", "Open... ::: Open an existing file from disk."),
             icons.folder_page,
-            context_for(self).editors.openFile,
+            lambda *args: context_for(self).editors.openFile(*args),
         )
         if self.parent().property("applicationCommandProjection"):
             self.addItem(
@@ -527,19 +533,19 @@ class FileMenu(Menu):
                     "menu", "Reload from disk ::: Reload the current file from disk."
                 ),
                 icons.reload_file_from_disk,
-                context_for(self).editors.reloadFile,
+                lambda *args: context_for(self).editors.reloadFile(*args),
             ),
             self.addItem(
                 translate("menu", "Save ::: Save the current file to disk."),
                 icons.disk,
-                context_for(self).editors.saveFile,
+                lambda *args: context_for(self).editors.saveFile(*args),
             ),
             self.addItem(
                 translate(
                     "menu", "Save as... ::: Save the current file under another name."
                 ),
                 icons.disk_as,
-                context_for(self).editors.saveFileAs,
+                lambda *args: context_for(self).editors.saveFileAs(*args),
             ),
             self.addItem(
                 translate(
@@ -552,17 +558,17 @@ class FileMenu(Menu):
             self.addItem(
                 translate("menu", "Save all ::: Save all open files."),
                 icons.disk_multiple,
-                context_for(self).editors.saveAllFiles,
+                lambda *args: context_for(self).editors.saveAllFiles(*args),
             ),
             self.addItem(
                 translate("menu", "Close ::: Close the current file."),
                 icons.page_delete,
-                context_for(self).editors.closeFile,
+                lambda *args: context_for(self).editors.closeFile(*args),
             ),
             self.addItem(
                 translate("menu", "Close all ::: Close all files."),
                 icons.page_delete_all,
-                context_for(self).editors.closeAllFiles,
+                lambda *args: context_for(self).editors.closeAllFiles(*args),
             ),
             self.addItem(
                 translate(
@@ -717,7 +723,9 @@ class EditMenu(Menu):
             "uncommentCode",
         )
         self.addItem(
-            translate("menu", "Toggle Comment ::: Toggle comment for the selected line."),
+            translate(
+                "menu", "Toggle Comment ::: Toggle comment for the selected line."
+            ),
             None,
             self._editItemCallback,
             "toggleCommentCode",
@@ -792,7 +800,7 @@ class EditMenu(Menu):
                 "Find or replace ::: Show find/replace widget. Initialize with selected text.",
             ),
             icons.find,
-            context_for(self).editors._findReplace.startFind,
+            lambda *args: context_for(self).editors._findReplace.startFind(*args),
         )
         self.addItem(
             translate(
@@ -800,7 +808,7 @@ class EditMenu(Menu):
                 "Find selection ::: Find the next occurrence of the selected text.",
             ),
             None,
-            context_for(self).editors._findReplace.findSelection,
+            lambda *args: context_for(self).editors._findReplace.findSelection(*args),
         )
         self.addItem(
             translate(
@@ -808,14 +816,14 @@ class EditMenu(Menu):
                 "Find selection backward ::: Find the previous occurrence of the selected text.",
             ),
             None,
-            context_for(self).editors._findReplace.findSelectionBw,
+            lambda *args: context_for(self).editors._findReplace.findSelectionBw(*args),
         )
         self.addItem(
             translate(
                 "menu", "Find next ::: Find the next occurrence of the search string."
             ),
             None,
-            context_for(self).editors._findReplace.findNext,
+            lambda *args: context_for(self).editors._findReplace.findNext(*args),
         )
         self.addItem(
             translate(
@@ -823,7 +831,7 @@ class EditMenu(Menu):
                 "Find previous ::: Find the previous occurrence of the search string.",
             ),
             None,
-            context_for(self).editors._findReplace.findPrevious,
+            lambda *args: context_for(self).editors._findReplace.findPrevious(*args),
         )
         self.addItem(
             translate(
@@ -955,12 +963,16 @@ class ViewMenu(Menu):
 
         # Build menu
         self.addItem(
-            translate("menu", "Select shell ::: Focus the cursor on the current shell."),
+            translate(
+                "menu", "Select shell ::: Focus the cursor on the current shell."
+            ),
             icons.application_shell,
             self._selectShell,
         )
         self.addItem(
-            translate("menu", "Select editor ::: Focus the cursor on the current editor."),
+            translate(
+                "menu", "Select editor ::: Focus the cursor on the current editor."
+            ),
             icons.application_edit,
             self._selectEditor,
         )
@@ -970,7 +982,7 @@ class ViewMenu(Menu):
                 "Move editor to next area ::: Move the current document to the next editor area.",
             ),
             icons.application_edit,
-            context_for(self).editors.moveCurrentEditorToNextGroup,
+            lambda *args: context_for(self).editors.moveCurrentEditorToNextGroup(*args),
         )
         self.addSeparator()
         pyzo.core.views.ViewManagerDialog.registerMenuAction(
@@ -1057,7 +1069,9 @@ class ViewMenu(Menu):
             self._previousTopLevelObject,
         )
         self.addItem(
-            translate("menu", "Next object ::: Advance to the next top-level structure."),
+            translate(
+                "menu", "Next object ::: Advance to the next top-level structure."
+            ),
             None,
             self._nextTopLevelObject,
         )
@@ -1369,7 +1383,10 @@ class ShellMenu(Menu):
         for i, config in enumerate(config_for(self).shellConfigs2):
             name = translate("menu", "Create shell {}: ({})").format(i + 1, config.name)
             action = self.addItem(
-                name, pyzo.icons.application_add, context_for(self).shells.addShell, config
+                name,
+                pyzo.icons.application_add,
+                lambda config: context_for(self).shells.addShell(config),
+                config,
             )
             self._shellCreateActions.append(action)
 
@@ -1440,7 +1457,10 @@ class ShellButtonMenu(ShellMenu):
         for i, config in enumerate(config_for(self).shellConfigs2):
             name = translate("menu", "Create shell {}: ({})").format(i + 1, config.name)
             action = self._newShellMenu.addItem(
-                name, pyzo.icons.application_add, context_for(self).shells.addShell, config
+                name,
+                pyzo.icons.application_add,
+                lambda config: context_for(self).shells.addShell(config),
+                config,
             )
             self._shellCreateActions.append(action)
 
@@ -1666,7 +1686,9 @@ class EditorContextMenu(Menu):
             "uncommentCode",
         )
         self.addItem(
-            translate("menu", "Toggle Comment ::: Toggle comment for the selected line."),
+            translate(
+                "menu", "Toggle Comment ::: Toggle comment for the selected line."
+            ),
             None,
             self._editItemCallback,
             "toggleCommentCode",
@@ -1682,7 +1704,9 @@ class EditorContextMenu(Menu):
         )
         self.addSeparator()
         self.addItem(
-            translate("menu", "Goto Definition ::: Go to definition of word under cursor."),
+            translate(
+                "menu", "Goto Definition ::: Go to definition of word under cursor."
+            ),
             icons.debug_return,
             self._editItemCallback,
             "gotoDef",
@@ -1700,7 +1724,7 @@ class EditorContextMenu(Menu):
                 "Find or replace ::: Show find/replace widget. Initialize with selected text.",
             ),
             icons.find,
-            context_for(self).editors._findReplace.startFind,
+            lambda *args: context_for(self).editors._findReplace.startFind(*args),
         )
         self.addItem(
             translate(
@@ -1708,7 +1732,7 @@ class EditorContextMenu(Menu):
                 "Find selection ::: Find the next occurrence of the selected text.",
             ),
             None,
-            context_for(self).editors._findReplace.findSelection,
+            lambda *args: context_for(self).editors._findReplace.findSelection(*args),
         )
         self.addItem(
             translate(
@@ -1716,7 +1740,7 @@ class EditorContextMenu(Menu):
                 "Find selection backward ::: Find the previous occurrence of the selected text.",
             ),
             None,
-            context_for(self).editors._findReplace.findSelectionBw,
+            lambda *args: context_for(self).editors._findReplace.findSelectionBw(*args),
         )
 
         # This is a subset of the run menu. Copied manually.
@@ -1740,6 +1764,7 @@ class EditorContextMenu(Menu):
             self._editor.helpOnText(self._pos)
         else:
             getattr(self._editor, action)()
+
 
 class EditorTabContextMenu(Menu):
     def __init__(self, *args, **kwds):
@@ -2071,12 +2096,15 @@ class ToolsMenu(Menu):
         self.addItem(
             translate("menu", "Reload tools ::: For people who develop tools."),
             pyzo.icons.plugin_refresh,
-            context_for(self).toolManager.reloadTools,
+            lambda *args: context_for(self).toolManager.reloadTools(*args),
         )
         self.addSeparator()
 
         self.onToolInstanceChange()  # Build initial menu
-        context_for(self).toolManager.toolInstanceChange.connect(self.onToolInstanceChange)
+        context_for(self).toolManager.toolInstanceChange.connect(
+            self.onToolInstanceChange
+        )
+        self.aboutToShow.connect(self.onToolInstanceChange)
 
     def onToolInstanceChange(self):
         # Remove all exisiting tools from the menu

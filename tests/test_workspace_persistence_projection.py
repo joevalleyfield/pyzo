@@ -46,6 +46,7 @@ def test_mixed_editor_tool_restore_maps_every_local_pane_and_prunes_old_shell(
         WorkspaceModel,
     )
     from spikes.peer_frames.fake_backend import FakeBackend
+    from spikes.peer_frames.workspace_session import WorkspaceSessionService
 
     saved = WorkspaceModel(FakeBackend())
     for pane_id, kind in (
@@ -85,12 +86,17 @@ def test_mixed_editor_tool_restore_maps_every_local_pane_and_prunes_old_shell(
         _PeerPaneKind=PaneKind,
         _PeerOperationResult=OperationResult,
         _PeerOperationStatus=OperationStatus,
+        _workspaceSessionFor=lambda runtime: WorkspaceSessionService(
+            current, lambda: {}, lambda: ["local"], lambda tools: None
+        ),
     )
     result = MainWindow._restorePeerRuntimeLayout(
         main,
         runtime,
         {
             "session": {
+                "schema": 1,
+                "loaded_tools": ["local"],
                 "layout": saved.serialize_layout(),
                 "editor_views": {"view": "old-editor"},
                 **({"tool_panes": {"local": saved_tool}} if semantic else {}),

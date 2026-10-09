@@ -1619,15 +1619,10 @@ class MainWindow(_ApplicationHostBase):
                 # Apply session metadata to that topology, not the old IDs.
                 snapshot = deepcopy(snapshot)
                 current = self._peerWorkspace.serialize_layout()
-                frame_ids = dict(
-                    zip(
-                        (frame["id"] for frame in snapshot["layout"]["frames"]),
-                        (frame["id"] for frame in current["frames"]),
-                    )
-                )
+                frame_ids = {frame["id"] for frame in current["frames"]}
                 snapshot["layout"] = current
                 snapshot["frame_geometries"] = {
-                    frame_ids[identity]: geometry
+                    identity: geometry
                     for identity, geometry in snapshot.get(
                         "frame_geometries", {}
                     ).items()
@@ -1640,7 +1635,9 @@ class MainWindow(_ApplicationHostBase):
                 print("Could not restore peer workspace session: " + result.detail)
         self._peerApplicationLifecycle.initialize_default_frame()
 
-    def _restorePersistedPeerEditors(self, workspace_ids=None, *, include_retained=False):
+    def _restorePersistedPeerEditors(
+        self, workspace_ids=None, *, include_retained=False
+    ):
         """Recreate persisted open editor views before restoring their layout."""
 
         resources = self._peerPersistedDocumentResources
@@ -1712,12 +1709,18 @@ class MainWindow(_ApplicationHostBase):
                         ),
                         workspace_id=runtime_identity,
                     )
-                if runtime is self._peerRuntime:
-                    item = pyzo.editors.newFile()
-                else:
+                host = next(
+                    (
+                        host
+                        for host in runtime.editor_hosts
+                        if host._tabs.currentItem() is None
+                    ),
+                    None,
+                )
+                if host is None:
                     host = self._createEditorHostForRuntime(runtime)
                     pyzo.editors.addGroup(host)
-                    item = host.newFile()
+                item = host.newFile()
                 editor = item.editor
                 host = pyzo.editors._group_for_editor(editor)
                 path = record.get("path")
@@ -1787,7 +1790,11 @@ class MainWindow(_ApplicationHostBase):
                 str(identity), {}
             )
             result = self._restorePeerRuntimeLayout(runtime, record)
-            if runtime is not self._peerRuntime and not result.applied and result.detail:
+            if (
+                runtime is not self._peerRuntime
+                and not result.applied
+                and result.detail
+            ):
                 self._peerWorkspaceRestoreFailures[str(identity)] = result.detail
         for host in pyzo.editors.groups:
             self._bindPeerEditorLifecycle(host)
@@ -1810,10 +1817,7 @@ class MainWindow(_ApplicationHostBase):
             return self._PeerOperationResult(self._PeerOperationStatus.APPLIED)
         workspace = self._peerWorkspaces.model(runtime.identity)
         editor_views = session.get("editor_views")
-        if isinstance(editor_views, dict) and all(
-            pane.kind in (self._PeerPaneKind.EDITOR, self._PeerPaneKind.TOOL)
-            for pane in workspace.panes.values()
-        ):
+        if isinstance(editor_views, dict):
             from spikes.peer_frames.workspace_session import retained_pane_layout
 
             current_views = {
@@ -1860,12 +1864,38 @@ class MainWindow(_ApplicationHostBase):
                     )
                     if old_id is not None:
                         pane_ids[old_id] = pane_id
-            if set(pane_ids.values()) != set(workspace.panes):
+            if set(pane_ids.values()) != {
+                pane_id
+                for pane_id, pane in workspace.panes.items()
+                if pane.kind is not self._PeerPaneKind.SHELL
+            }:
                 return self._PeerOperationResult(
                     self._PeerOperationStatus.INVALID,
                     "retained editor layout mapping is incomplete",
                 )
-            return workspace.restore_layout(retained_pane_layout(saved, pane_ids))
+            translated = retained_pane_layout(
+                saved, pane_ids, current_layout=workspace.serialize_layout()
+            )
+            frame_ids = {frame["id"] for frame in translated["frames"]}
+            restored = self._workspaceSessionFor(runtime).restore(
+                {
+                    **session,
+                    "layout": translated,
+                    "frame_geometries": {
+                        identity: geometry
+                        for identity, geometry in session.get(
+                            "frame_geometries", {}
+                        ).items()
+                        if identity in frame_ids
+                    },
+                }
+            )
+            return self._PeerOperationResult(
+                self._PeerOperationStatus.APPLIED
+                if restored.applied
+                else self._PeerOperationStatus.INVALID,
+                restored.detail,
+            )
         current = workspace.serialize_layout()
         saved_frames = saved.get("frames", [])
         current_frames = current.get("frames", [])
@@ -1875,7 +1905,9 @@ class MainWindow(_ApplicationHostBase):
         current_groups = [
             group for frame in current_frames for group in frame.get("groups", [])
         ]
-        saved_panes = [pane for group in saved_groups for pane in group.get("panes", [])]
+        saved_panes = [
+            pane for group in saved_groups for pane in group.get("panes", [])
+        ]
         current_panes = [
             pane for group in current_groups for pane in group.get("panes", [])
         ]
@@ -1904,7 +1936,10 @@ class MainWindow(_ApplicationHostBase):
         def remap_node(node):
             if node.get("type") == "group":
                 return {**node, "group_id": group_ids[node["group_id"]]}
-            return {**node, "children": [remap_node(child) for child in node["children"]]}
+            return {
+                **node,
+                "children": [remap_node(child) for child in node["children"]],
+            }
 
         translated = {
             "schema": saved.get("schema", 1),
@@ -2365,6 +2400,18 @@ class MainWindow(_ApplicationHostBase):
                     continue
                 frame._workspaceContextOwner = owner
                 frame.setAccessibleName(f"Workspace {name}; frame {frame_id}")
+                record = runtime.model.frames.get(frame_id)
+                if record is None or not record.groups:
+                    continue
+                panes = {
+                    pane for group in record.groups.values() for pane in group.panes
+                }
+                pane_id = runtime.model.active_pane_id
+                if pane_id not in panes:
+                    pane_id = next(iter(record.groups.values())).active_pane_id
+                dock = runtime.backend.docks.get(pane_id)
+                if dock is not None and isValid(dock):
+                    frame.setWindowTitle(dock.windowTitle())
 
     def _addWorkspaceToolDock(self, owner, dock, target=None):
         runtime = self._peerRuntimeCatalog.runtime(owner)
@@ -3537,7 +3584,9 @@ class MainWindow(_ApplicationHostBase):
             raise RuntimeError("committed clean editor close did not complete")
 
     def _updateEditorDockTitle(self, host):
-        dock = self._editorHosts.get(host)
+        runtime = self._peerRuntimeForEditorHost(host)
+        hosts = runtime.editor_hosts if runtime is not None else self._editorHosts
+        dock = hosts.get(host)
         if dock is None:
             return
         item = host._tabs.currentItem()
