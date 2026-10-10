@@ -1745,7 +1745,7 @@ class EditorTabs(QtWidgets.QWidget):
             return "discard"
         return "cancel"
 
-    def closeFile(self, editor=None):
+    def closeFile(self, editor=None, *, _peer_committed=False):
         """Close the selected (or current) editor.
 
         Returns same result as askToSaveFileIfDirty()
@@ -1770,11 +1770,15 @@ class EditorTabs(QtWidgets.QWidget):
             return
 
         # Ask if dirty
-        result = self.askToSaveFileIfDirty(editor)
+        if _peer_committed:
+            assert not editor.document().isModified()
+            result = 1
+        else:
+            result = self.askToSaveFileIfDirty(editor)
 
         # Ask if closing pinned file
         close_txt, discard_txt, cancel_txt, save_txt = self._get_action_texts()
-        if result and item.pinned:
+        if result and item.pinned and not _peer_committed:
             result = simpleDialog(
                 editor,
                 translate("editor", "Closing pinned"),
@@ -1892,7 +1896,9 @@ class EditorTabs(QtWidgets.QWidget):
                 if item[1] == "hist":
                     # select item (to make the history right)
                     if fname in fileItems:
-                        self._tabs.setCurrentItem(fileItems[fname])
+                        restored = fileItems[fname]
+                        host = pyzo.editors._group_for_editor(restored.editor) or self
+                        host._tabs.setCurrentItem(restored)
                 elif fname:
                     # a file item, create editor-item and store
                     itm = self.loadFile(fname, ignoreFail=True)
@@ -1909,7 +1915,8 @@ class EditorTabs(QtWidgets.QWidget):
                             # ed.centerCursor() #TODO: this does not work properly yet
                             # set main and/or pinned?
                             if "main" in item:
-                                self._tabs._mainFile = itm.id
+                                host = pyzo.editors._group_for_editor(ed) or self
+                                host._tabs._mainFile = itm.id
                             if "pinned" in item:
                                 itm._pinned = True
                         except Exception as err:

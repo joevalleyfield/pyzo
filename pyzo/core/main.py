@@ -928,7 +928,15 @@ class MainWindow(_ApplicationHostBase):
                     and not has_workspace_views
                 )
                 factory_startup = migration_pending or not has_nonempty_layout
-            self._peerFactoryStartup = factory_startup and "--test" not in sys.argv
+            # A missing peer layout also describes an existing upstream/legacy
+            # profile. Import its files and tools before creating a default
+            # frame; only an empty compatibility profile uses factory defaults.
+            has_legacy_state = bool(
+                pyzo.config.state.editorState2 or pyzo.config.state.loadedTools
+            )
+            self._peerFactoryStartup = (
+                factory_startup and not has_legacy_state and "--test" not in sys.argv
+            )
             if persisted_workspace_id is None and not self._peerPersistedEmptyWorkspaceSet:
                 candidate_identity = new_identity(IdentityKind.WORKSPACE)
                 if (
@@ -1743,6 +1751,7 @@ class MainWindow(_ApplicationHostBase):
                 )
                 state = view.get("state", {})
                 if isinstance(state, dict):
+                    item._pinned = bool(state.get("pinned", False))
                     cursor = editor.textCursor()
                     selection = state.get("selection", (0, 0))
                     cursor.setPosition(int(selection[0]))
@@ -3579,7 +3588,7 @@ class MainWindow(_ApplicationHostBase):
         if pyzo.application is not None and pyzo.application.documents is not None:
             pyzo.application.documents.flush(editor)
             pyzo.application.documents.unbind(editor)
-        result = pyzo.editors.closeFileCommitted(editor)
+        result = pyzo.editors.closeFileCommitted(editor, peer_committed=True)
         if not result:
             raise RuntimeError("committed clean editor close did not complete")
 

@@ -1926,6 +1926,11 @@ class EditorTabContextMenu(Menu):
             pyzo.util.open_directory_outside_pyzo(dirpath, filename)
         elif action == "pin":
             item._pinned = not item._pinned
+            documents = getattr(pyzo.application, "documents", None)
+            if documents is not None and documents.is_bound(item.editor):
+                documents.registry.update_view_state(
+                    documents.view_identity(item.editor), pinned=item.pinned
+                )
         elif action == "main":
             if getattr(pyzo.application, "workspace_execution", None) is not None:
                 pyzo.runCommands.toggle_main(item.editor)

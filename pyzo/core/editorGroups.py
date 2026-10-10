@@ -156,13 +156,17 @@ class EditorGroupManager(QtCore.QObject):
             return self._closeRequester(editor)
         return self.closeFileCommitted(editor)
 
-    def closeFileCommitted(self, editor=None):
+    def closeFileCommitted(self, editor=None, *, peer_committed=False):
         """Close after application lifecycle negotiation has committed."""
 
         group = self._activeGroup if editor is None else self._group_for_editor(editor)
         if group is None:
             return None
-        result = group.closeFile(editor)
+        result = (
+            group.closeFile(editor, _peer_committed=True)
+            if peer_committed
+            else group.closeFile(editor)
+        )
         self._remove_group_if_empty(group)
         return result
 
@@ -204,6 +208,11 @@ class EditorGroupManager(QtCore.QObject):
         configuration.state.find_wholeWord = fr._wholeWord.isChecked()
         configuration.state.find_autoHide = fr._autoHide.isChecked()
         configuration.state.find_show = fr.isVisible()
+        if getattr(pyzo, "workspaceContext", None) is not None:
+            # Peer views persist in the document registry. Keep the imported
+            # legacy file list readable when this profile returns to QtADS or
+            # upstream Pyzo, including after peer hosts have been torn down.
+            return
         state = []
         for group in self._groups:
             state.extend(group._getCurrentOpenFilesAsSsdfList())
