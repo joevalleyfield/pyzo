@@ -17,6 +17,7 @@ import ast
 import json
 
 from pyzo.qt import QtCore, QtGui, QtWidgets
+from shiboken6 import isValid
 
 import pyzo
 from pyzo.core.workspaceContext import config_for, context_for
@@ -26,6 +27,14 @@ from pyzo.core.pyzoLogging import print  # noqa
 from pyzo import translate
 
 from pyzo.core.pdfExport import PdfExport
+
+
+def _disconnect_menu_connections(connections):
+    for connection in connections:
+        # Handles remain safe after native receiver/sender destruction;
+        # disconnecting by a bound Python method can inspect a dead wrapper.
+        QtCore.QObject.disconnect(connection)
+    connections.clear()
 
 
 def show_workspace_capabilities(widget):
@@ -67,6 +76,12 @@ def buildMenus(menuBar):
         menuBar.addMenu(menu)
         menuName = menu.__class__.__name__.lower().split("menu")[0]
         menuBar._menumap[menuName] = menu
+
+    def dispose_menus():
+        for menu in menuBar.findChildren(Menu):
+            menu.dispose()
+
+    menuBar._disposeMenus = dispose_menus
 
     # Enable tooltips
     def onHover(action):
@@ -205,6 +220,15 @@ class Menu(QtWidgets.QMenu):
 
     def __init__(self, parent=None, name=None):
         super().__init__(parent)
+        self._externalConnections = []
+        self._disposed = False
+        # Native Qt parent destruction can precede projector reconciliation.
+        # Capture only the connection list: the menu wrapper is invalid here.
+        self.destroyed.connect(
+            lambda *_args, connections=self._externalConnections: (
+                _disconnect_menu_connections(connections)
+            )
+        )
 
         # Make sure that the menu has a title
         if name:
@@ -239,6 +263,24 @@ class Menu(QtWidgets.QMenu):
         # Build the menu. Happens only once
         self.build()
 
+    def _connectExternal(self, signal, callback, connection_type=QtCore.Qt.ConnectionType.AutoConnection):
+        def dispatch(*args):
+            # Disconnect does not cancel callbacks already queued by Qt.
+            if not self._disposed and isValid(self):
+                callback(*args)
+
+        self._externalConnections.append(signal.connect(dispatch, connection_type))
+
+    def dispose(self):
+        """Retire application subscriptions before the owning frame disappears."""
+        if self._disposed:
+            return
+        self._disposed = True
+        _disconnect_menu_connections(self._externalConnections)
+        projector = getattr(pyzo, "shellCommandProjector", None)
+        if projector is not None:
+            projector.retire_menu(self)
+
     def _createMenuPathName(self, name):
         """Convert a menu title into a menuPath component name
         e.g. Interrupt current shell -> interrupt_current_shell
@@ -256,10 +298,10 @@ class Menu(QtWidgets.QMenu):
         """Convenience function that makes the right call to addAction()."""
 
         # Add the action
-        if icon is None:
-            a = self.addAction(text)
-        else:
-            a = self.addAction(icon, text)
+        a = QtGui.QAction(str(text), self)
+        if icon is not None:
+            a.setIcon(icon)
+        self.addAction(a)
 
         # Checkable?
         if selected is not None:
@@ -278,7 +320,9 @@ class Menu(QtWidgets.QMenu):
         a.menuPath = self.menuPath + "__" + self._createMenuPathName(key)
 
         # Register the action so its keymap is kept up to date
-        pyzo.keyMapper.keyMappingChanged.connect(lambda: pyzo.keyMapper.setShortcut(a))
+        self._connectExternal(
+            pyzo.keyMapper.keyMappingChanged, lambda: pyzo.keyMapper.setShortcut(a)
+        )
         pyzo.keyMapper.setShortcut(a)
 
         return a
@@ -496,7 +540,7 @@ class FileMenu(Menu):
         self._lineEndingMenu.setOptions(["LF", "CR", "CRLF"])
 
         # Bind to signal
-        context_for(self).editors.currentChanged.connect(self.onEditorsCurrentChanged)
+        self._connectExternal(context_for(self).editors.currentChanged, self.onEditorsCurrentChanged)
         self.aboutToShow.connect(self.onEditorsCurrentChanged)
 
         # Build menu file management stuff
@@ -1271,8 +1315,8 @@ class ShellMenu(Menu):
         self._shellCreateActions = []
         self._shellActions = []
         super().__init__(parent, name)
-        context_for(self).shells.currentShellChanged.connect(self.onCurrentShellChanged)
-        context_for(self).shells.executionShellChanged.connect(self._updateExecutionTarget)
+        self._connectExternal(context_for(self).shells.currentShellChanged, self.onCurrentShellChanged)
+        self._connectExternal(context_for(self).shells.executionShellChanged, self._updateExecutionTarget)
         self.aboutToShow.connect(self._updateShells)
         self.aboutToShow.connect(self._updateExecutionTarget)
         self._updateExecutionTarget()
@@ -1949,7 +1993,7 @@ class EditorTabContextMenu(Menu):
 class RunMenu(Menu):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        context_for(self).shells.executionShellChanged.connect(self._updateExecutionTarget)
+        self._connectExternal(context_for(self).shells.executionShellChanged, self._updateExecutionTarget)
         self.aboutToShow.connect(self._updateExecutionTarget)
         self._updateExecutionTarget()
 
@@ -2106,8 +2150,8 @@ class ToolsMenu(Menu):
         self.addSeparator()
 
         self.onToolInstanceChange()  # Build initial menu
-        context_for(self).toolManager.toolInstanceChange.connect(
-            self.onToolInstanceChange
+        self._connectExternal(
+            context_for(self).toolManager.toolInstanceChange, self.onToolInstanceChange
         )
         self.aboutToShow.connect(self.onToolInstanceChange)
 

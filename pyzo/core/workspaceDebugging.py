@@ -201,7 +201,11 @@ class WorkspaceDebugging:
         ):
             return None
         sources = getattr(shell, "_workspaceSessionSources", {})
-        identity = sources.get(filename)
+        identity = next(
+            (identity for path, identity in sources.items()
+             if os.path.normcase(path) == os.path.normcase(filename)),
+            None,
+        )
         if identity is None:
             identity = self.documents.registry._paths.get(filename)
         if identity is None:
@@ -210,7 +214,7 @@ class WorkspaceDebugging:
                 (
                     identity
                     for path, identity in self.documents.registry._paths.items()
-                    if os.path.realpath(path) == canonical
+                    if os.path.normcase(os.path.realpath(path)) == os.path.normcase(canonical)
                 ),
                 None,
             )
@@ -233,7 +237,15 @@ class WorkspaceDebugging:
         if self.execution._foreground.get(binding.workspace_id) is not shell:
             return
         sources = getattr(shell, "_workspaceSessionSources", {})
-        by_document = {sources.get(filename): line for filename, line in lines}
+        # Native debugger filenames use platform-normalized casing. Preserve
+        # captured document identity while matching that spelling on Windows.
+        normalized_sources = {
+            os.path.normcase(path): identity for path, identity in sources.items()
+        }
+        by_document = {
+            normalized_sources.get(os.path.normcase(filename)): line
+            for filename, line in lines
+        }
         for editor in tuple(self.documents._editors):
             view = self.view(editor)
             if view and view.workspace_id == binding.workspace_id:

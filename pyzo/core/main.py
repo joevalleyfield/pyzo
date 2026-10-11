@@ -1328,7 +1328,7 @@ class MainWindow(_ApplicationHostBase):
             pyzo.workspacePersistence = _PeerWorkspacePersistenceFacade(self)
             self._peerRetentionCoordinator = RetentionCoordinator(
                 clock=time.monotonic,
-                capture=pyzo.application.documents.persistence_snapshot,
+                capture=self._capturePeerRetentionSnapshot,
                 writer=self._writePeerRetentionSnapshot,
                 schedule=lambda delay, callback: QtCore.QTimer.singleShot(
                     max(0, int(delay * 1000)), callback
@@ -2166,7 +2166,7 @@ class MainWindow(_ApplicationHostBase):
         return self._peerJsonValue(pyzo.config)
 
     def _savePeerWorkspacePersistence(
-        self, document_snapshot=None, preserve_workspace_ids=()
+        self, document_snapshot=None, preserve_workspace_ids=(), *, context_snapshot=None
     ):
         if self._peerWorkspacePersistenceBlocked:
             raise RuntimeError(
@@ -2206,7 +2206,11 @@ class MainWindow(_ApplicationHostBase):
             )
             contexts = getattr(pyzo, "workspaceContext", None)
             if contexts is not None:
-                previous["profile"]["contextual"] = contexts.snapshot(runtime.identity)
+                previous["profile"]["contextual"] = (
+                    deepcopy(context_snapshot[captured_id])
+                    if context_snapshot is not None and captured_id in context_snapshot
+                    else contexts.snapshot(runtime.identity)
+                )
                 previous["session"]["loaded_tools"] = pyzo.toolManager.for_workspace(
                     runtime.identity
                 ).getLoadedTools()
@@ -2293,11 +2297,24 @@ class MainWindow(_ApplicationHostBase):
         )
         return committed
 
+    def _capturePeerRetentionSnapshot(self):
+        """Capture document and contextual changes as one checkpoint generation."""
+        contexts = getattr(pyzo, "workspaceContext", None)
+        return {
+            "documents": pyzo.application.documents.persistence_snapshot(),
+            "contexts": {
+                str(owner): contexts.snapshot(owner)
+                for owner in self._peerWorkspaces.workspace_ids
+            } if contexts is not None else {},
+        }
+
     def _writePeerRetentionSnapshot(self, snapshot, complete):
         """Write one immutable owner-thread checkpoint generation."""
 
         try:
-            self._savePeerWorkspacePersistence(snapshot)
+            self._savePeerWorkspacePersistence(
+                snapshot["documents"], context_snapshot=snapshot["contexts"]
+            )
         except Exception as error:
             self._peerStatusService.showMessage(
                 "Checkpoint failed: " + str(error)
@@ -2473,9 +2490,13 @@ class MainWindow(_ApplicationHostBase):
             manager.loadTool(tool_id)
 
     def _peerRuntimeFrameWindows(self):
-        runtime = self._peerActiveRuntime()
-        runtime.backend._refresh_live_frame_windows()
-        return tuple(runtime.frame_windows.values())
+        # Every loaded workspace owns live frames. Foreground changes must not
+        # retire another workspace's per-frame menus and status controls.
+        return tuple(
+            frame
+            for identity in self._peerRuntimeCatalog.identities
+            for frame in self._peerRuntimeCatalog.runtime(identity).frame_windows.values()
+        )
 
     def _peerActiveRuntime(self):
         identity = self._peerWorkspaces.active_workspace_id
@@ -2633,11 +2654,9 @@ class MainWindow(_ApplicationHostBase):
     def _reconcilePeerChrome(self, windows=None):
         if not self._peerFrameMode:
             return
-        snapshot = tuple(
-            windows
-            if windows is not None
-            else self._peerRuntime.frame_windows.values()
-        )
+        # A backend's settled callback supplies only its own frames. Reconcile
+        # against the application census so other loaded workspaces stay live.
+        snapshot = self._peerRuntimeFrameWindows()
         self._peerStatusProjector.reconcile(snapshot)
         self._peerCommandProjector.reconcile(snapshot)
 
@@ -4551,7 +4570,7 @@ class MainWindow(_ApplicationHostBase):
             editor = item.editor
             self._activatePeerPaneForWidget(editor)
             assert pyzo.editors.getCurrentEditor() is editor
-            pyzo.runCommands.run_file((False, False), editor)
+            assert pyzo.runCommands.run_file((False, False), editor) is not None
             state.update(
                 phase="wait-run",
                 shell=shell,
@@ -4568,13 +4587,13 @@ class MainWindow(_ApplicationHostBase):
                 return False
             editor.toggleBreakpoint(5, triState=False)
             assert editor.breakPoints() == [5]
-            pyzo.runCommands.run_file((False, False), editor)
+            assert pyzo.runCommands.run_file((False, False), editor) is not None
             state["phase"] = "wait-debug"
             return False
 
         if phase == "wait-debug":
             debug_state = shell._debugState or {}
-            if debug_state.get("debugmode") != 2:
+            if debug_state.get("debugmode") != 2 or editor._debugLineIndicator != 5:
                 return False
             shell_host = next(
                 host for host in pyzo.shells.hosts if shell in host.getShells()
@@ -4591,7 +4610,7 @@ class MainWindow(_ApplicationHostBase):
                 )
             frames = debug_state["frames"]
             index = debug_state["index"]
-            assert frames[index - 1][0] == state["path"]
+            assert os.path.normcase(frames[index - 1][0]) == os.path.normcase(state["path"])
             assert frames[index - 1][1] == 5
             assert pyzo.editors.getCurrentEditor() is editor
             assert editor._debugLineIndicator == 5
@@ -4646,7 +4665,7 @@ class MainWindow(_ApplicationHostBase):
             assert editor_dock in self._peerBackend.frame_windows[
                 source_frame_id
             ].dockWidgets()
-            pyzo.runCommands.run_file((False, False), editor)
+            assert pyzo.runCommands.run_file((False, False), editor) is not None
             state.update(
                 phase="wait-exception",
                 path=path,
@@ -4663,17 +4682,23 @@ class MainWindow(_ApplicationHostBase):
             ).result_or_cancel(0.2)
             if last_exception != "RuntimeError('peer-postmortem')":
                 return False
+            # Evaluation and operation receipts arrive on separate channels.
+            # Re-entry needs the completed traceback's captured source map.
+            if editor._peerDocumentIdentity not in getattr(
+                shell, "_workspaceTracebackSources", {}
+            ).values():
+                return False
             shell.executeCommand("DB START\n")
             state["phase"] = "wait-postmortem"
             return False
 
         if phase == "wait-postmortem":
             debug_state = shell._debugState or {}
-            if debug_state.get("debugmode") != 1:
+            if debug_state.get("debugmode") != 1 or editor._debugLineIndicator != 5:
                 return False
             frames = debug_state["frames"]
             index = debug_state["index"]
-            assert frames[index - 1][0] == state["path"]
+            assert os.path.normcase(frames[index - 1][0]) == os.path.normcase(state["path"])
             assert frames[index - 1][1] == 5
             editor = state["editor"]
             assert pyzo.editors.getCurrentEditor() is editor
@@ -4698,10 +4723,11 @@ class MainWindow(_ApplicationHostBase):
 
         if phase == "wait-postmortem-outer":
             debug_state = shell._debugState or {}
-            if debug_state.get("index") != state["outer_index"]:
+            if debug_state.get("index") != state["outer_index"] or editor._debugLineIndicator != 6:
                 return False
             frame = debug_state["frames"][state["outer_index"] - 1]
-            assert frame == (state["path"], 6, "peer_postmortem_outer")
+            assert os.path.normcase(frame[0]) == os.path.normcase(state["path"])
+            assert frame[1:] == (6, "peer_postmortem_outer")
             editor = state["editor"]
             assert pyzo.editors.getCurrentEditor() is editor
             assert editor._debugLineIndicator == 6
@@ -4924,7 +4950,7 @@ class MainWindow(_ApplicationHostBase):
                 pyzo.runCommands.get_shell_and_editor("affinity")[0]
                 is second_shell
             )
-            pyzo.runCommands.run_file((False, False), editor)
+            assert pyzo.runCommands.run_file((False, False), editor) is not None
             state.update(
                 phase="wait-affinity-run",
                 editor=editor,
@@ -4952,6 +4978,21 @@ class MainWindow(_ApplicationHostBase):
             assert second_shell.get_kernel_cd() == state["expected_cwd"]
             assert pyzo.editors.closeFile(state["editor"]) == 1
             os.remove(state["path"])
+            # Windows holds a process's working directory open until it moves
+            # or exits; shell close starts asynchronous kernel termination.
+            second_shell.executeCommand(
+                "os.chdir({})\n".format(repr(tempfile.gettempdir()))
+            )
+            state["phase"] = "wait-affinity-release"
+            return False
+
+        if phase == "wait-affinity-release":
+            first_shell = state["first_shell"]
+            second_shell = state["second_shell"]
+            if os.path.normcase(second_shell.get_kernel_cd()) != os.path.normcase(
+                os.path.realpath(tempfile.gettempdir())
+            ):
+                return False
             original_chooser = self._peerShellCloseChooser
             self._peerShellCloseChooser = (
                 lambda _pane_id, _lifecycle: "terminate"
@@ -5059,6 +5100,13 @@ class MainWindow(_ApplicationHostBase):
             second_shell.closeShell()
         assert len(pyzo.shells.hosts) == 1
         assert pyzo.shells.getCurrentShell() is first_shell
+        if self._peerFrameMode:
+            # Closing a selected target must not silently choose an older
+            # execution shell. Select the remaining pane for the next smoke.
+            self._activatePeerPaneForWidget(first_shell)
+            assert self._peerSelectionExecution._foreground[
+                self._peerWorkspaceIdentity
+            ] is first_shell
         print("Pyzo independent shell-dock smoke test passed")
         if self._peerFrameMode and sys.platform == "darwin":
             self._testPeerZeroFrameLifecycle()
@@ -5971,13 +6019,19 @@ class MainWindow(_ApplicationHostBase):
             args = ["python.exe", "-m", "pyzo"]
 
         if sys.platform == "win32":
-            # workaround for MSVCRT issue with spaces in arguments
-            #     https://bugs.python.org/issue436259
-            from subprocess import list2cmdline
+            # Windows exec uses CRT teardown with Qt DLLs still loaded. Launch
+            # the successor, then leave the Qt event loop for ordinary cleanup.
+            import subprocess
 
-            args = [list2cmdline([s]) for s in args]
+            args[0] = sys.executable
+            self._restartProcess = subprocess.Popen(
+                args, creationflags=subprocess.CREATE_NO_WINDOW,
+                stdin=sys.__stdin__, stdout=sys.__stdout__, stderr=sys.__stderr__
+            )
+            QtWidgets.qApp.exit(0)
+            return
 
-        # Replace the process!
+        # POSIX replaces the current process without DLL teardown.
         os.execv(sys.executable, args)
 
     def createPopupMenu(self):

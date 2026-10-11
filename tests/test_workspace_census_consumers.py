@@ -161,7 +161,10 @@ def test_local_open_retains_shared_identity_and_modal_owner(
         raising=False,
     )
     alias = tmp_path / "alias.py"
-    alias.symlink_to(path)
+    from spikes.peer_frames.filesystem_capabilities import create_optional_symlink
+
+    if not create_optional_symlink(alias, path):
+        pytest.skip("optional symlink affordance unavailable to this Windows account")
     result = workspaceContext.LocalEditors.loadFile(facade, str(alias))
     if condition != "live":
         assert (

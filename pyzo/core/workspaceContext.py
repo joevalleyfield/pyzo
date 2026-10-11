@@ -678,6 +678,9 @@ class WorkspaceContexts:
                 layout.setContentsMargins(margin, margin, margin, margin)
 
     def retire(self, owner):
+        projector = getattr(pyzo, "menuProjector", None)
+        if projector is not None:
+            projector.retire_workspace(owner)
         context = self.contexts.pop(owner, None)
         if context is not None:
             for signal, callback in (

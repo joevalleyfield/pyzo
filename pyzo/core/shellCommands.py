@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pyzo
 
 from pyzo.qt import QtCore, QtGui
+from shiboken6 import isValid
 
 
 @dataclass(frozen=True)
@@ -280,7 +281,9 @@ class ShellCommandProjector(QtCore.QObject):
 
     def refresh(self):
         live = []
-        for action, command_id, shell_provider in self._projections:
+        for action, command_id, shell_provider in tuple(self._projections):
+            if not isValid(action):
+                continue
             try:
                 action.setEnabled(
                     self._service.is_enabled(command_id, shell_provider())
@@ -289,6 +292,12 @@ class ShellCommandProjector(QtCore.QObject):
                 continue
             live.append((action, command_id, shell_provider))
         self._projections = live
+
+    def retire_menu(self, menu):
+        self._projections = [
+            entry for entry in self._projections
+            if isValid(entry[0]) and entry[0].parent() is not menu
+        ]
 
     def _register(self, action, command_id, shell_provider):
         self._projections.append((action, command_id, shell_provider))
