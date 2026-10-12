@@ -2381,7 +2381,11 @@ class MainWindow(_ApplicationHostBase):
 
     def _checkpointPeerContext(self):
         contexts = getattr(pyzo, "workspaceContext", None)
-        if contexts is None or getattr(self, "_peerClosingWorkspace", False):
+        if (
+            contexts is None
+            or getattr(self, "_peerClosingWorkspace", False)
+            or getattr(self, "_peerApplicationExitRequested", False)
+        ):
             return
         snapshot = {
             str(owner): contexts.snapshot(owner)
@@ -2400,7 +2404,7 @@ class MainWindow(_ApplicationHostBase):
         self._peerStatusProjector.refresh()
 
     def _refreshWorkspaceAffiliation(self):
-        if not hasattr(self, "_peerWorkspaces"):
+        if not hasattr(self, "_peerWorkspaces") or getattr(self, "_peerApplicationExitRequested", False):
             return
         from shiboken6 import isValid
 

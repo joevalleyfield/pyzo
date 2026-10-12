@@ -1,6 +1,5 @@
 import os
 import sys
-import ctypes
 import locale
 import traceback
 
@@ -47,11 +46,8 @@ from pyzo.util import zon as ssdf  # zon is ssdf-light
 from pyzo.qt import QtCore, QtGui, QtWidgets
 
 # Enable high-res displays
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    pass  # fail on non-windows
+# Let Qt select per-monitor DPI awareness. Setting system awareness first
+# prevents a later per-monitor call from taking effect on Windows.
 try:
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)

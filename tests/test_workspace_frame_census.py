@@ -63,3 +63,17 @@ def test_render_focus_does_not_reproject_affiliation_but_user_focus_does(monkeyp
     host._peerWorkspaces.adopt_backend_activation = lambda *_: NS(applied=False)
     MainWindow._onFocusedDockWidgetChanged(host, dock)
     assert metadata == [] and selection == []
+
+
+def test_context_checkpoint_ignores_quit_teardown_but_resumes_after_cancel(monkeypatch):
+    calls=[]
+    monkeypatch.setattr(pyzo,"workspaceContext",NS(snapshot=lambda _: calls.append("snapshot") or {}),raising=False)
+    host=NS(_peerApplicationExitRequested=True,_peerWorkspaces=NS(workspace_ids=("a",)),
+            _peerContextSnapshot={"a":{}},_refreshWorkspaceAffiliation=lambda:calls.append("affiliation"),
+            _peerStatusProjector=NS(refresh=lambda:calls.append("status")))
+    MainWindow._checkpointPeerContext(host)
+    MainWindow._refreshWorkspaceAffiliation(host) # No runtime remains during quit.
+    assert calls == []
+    host._peerApplicationExitRequested=False
+    MainWindow._checkpointPeerContext(host)
+    assert calls == ["snapshot","affiliation","status"]

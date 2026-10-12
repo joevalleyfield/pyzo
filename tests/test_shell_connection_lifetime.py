@@ -87,3 +87,22 @@ def test_connection_is_retired_before_replacement_preparation_can_fail(monkeypat
         PythonShell.connectToKernel(shell, object())
     assert calls == []
     app.sendPostedEvents()
+
+
+def test_committed_close_retires_transport_before_flush_callback(monkeypatch):
+    import pyzo
+    from pyzo.core.shell import PythonShell
+    calls=[];old=object()
+    shell=SimpleNamespace(_brokerConnection=old,sendBreakPoints=object(),
+        terminate=lambda:calls.append("terminate"),
+        _timer=SimpleNamespace(stop=lambda:calls.append("stop"),timeout=SimpleNamespace(disconnect=lambda:None)),
+        customContextMenuRequested=SimpleNamespace(disconnect=lambda:None))
+    def flush():
+        assert shell._brokerConnection is None
+        PythonShell._onConnectionClose(shell,old,"queued after retirement")
+        calls.append("flush")
+    shell._context=SimpleNamespace(connection_count=1,flush=flush,close=lambda:calls.append("close"))
+    monkeypatch.setattr(pyzo,"editors",SimpleNamespace(breakPointsChanged=SimpleNamespace(disconnect=lambda _:None)),raising=False)
+    monkeypatch.setattr(pyzo,"shells",SimpleNamespace(removeShell=lambda _:calls.append("remove")),raising=False)
+    assert PythonShell.closeShellCommitted(shell) == 1
+    assert calls == ["terminate","flush","close","remove","stop"]

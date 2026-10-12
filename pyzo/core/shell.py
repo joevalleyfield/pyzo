@@ -2006,6 +2006,9 @@ class PythonShell(BaseShell):
     def closeShellCommitted(self, terminate_kernel=True):
         """Release a shell after application lifecycle policy commits."""
 
+        # The committed shell is being retired. A queued connection-close
+        # callback must not decorate it after its Qt parent has been destroyed.
+        self._brokerConnection = None
         pyzo.editors.breakPointsChanged.disconnect(self.sendBreakPoints)
 
         # If we can, try to tell the broker to terminate the kernel
