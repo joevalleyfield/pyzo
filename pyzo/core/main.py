@@ -2390,14 +2390,13 @@ class MainWindow(_ApplicationHostBase):
         if contexts is None or suspended():
             return
         owners = tuple(self._peerWorkspaces.workspace_ids)
-        snapshot = {
-            str(owner): contexts.snapshot(owner)
-            for owner in owners
-        }
+        snapshot = {}
         # Capture/preferences can call application code. Recheck ownership
         # after those callbacks before using a snapshot of retired owners.
-        if suspended() or owners != tuple(self._peerWorkspaces.workspace_ids):
-            return
+        for owner in owners:
+            snapshot[str(owner)] = contexts.snapshot(owner)
+            if suspended() or owners != tuple(self._peerWorkspaces.workspace_ids):
+                return
         if snapshot != self._peerContextSnapshot:
             previous = self._peerContextSnapshot or {}
             for owner in owners:

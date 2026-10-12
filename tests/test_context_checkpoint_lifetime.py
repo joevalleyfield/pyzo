@@ -78,6 +78,19 @@ def test_checkpoint_rechecks_after_preferences_callback(monkeypatch):
     assert main._peerContextSnapshot is None
 
 
+def test_checkpoint_stops_capture_before_next_retired_owner(monkeypatch):
+    main, contexts, calls = checkpoint_world(monkeypatch)
+    main._peerWorkspaces.workspace_ids = ("A", "B")
+    def snapshot(owner):
+        calls.append(owner)
+        assert owner == "A", "captured B after A's callback began teardown"
+        main._peerApplicationExitRequested = True
+        return {"config": {"x": 1}}
+    contexts.snapshot = snapshot
+    MainWindow._checkpointPeerContext(main)
+    assert calls == ["A"]
+
+
 def test_checkpoint_unrelated_failure_remains_visible(monkeypatch):
     main, contexts, calls = checkpoint_world(monkeypatch)
     def fail(owner):
