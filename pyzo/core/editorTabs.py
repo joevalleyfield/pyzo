@@ -446,6 +446,8 @@ class FindReplaceWidget(QtWidgets.QFrame):
 
     def autoHideTimerCallback(self):
         """Check whether we should hide the tool."""
+        if getattr(self, "_timersRetired", False):
+            return
         timeout = config_for(self).advanced.find_autoHide_timeout
         if self._autoHide.isChecked():
             if time.time() - self._timerAutoHide_t0 > timeout:  # seconds
@@ -455,6 +457,12 @@ class FindReplaceWidget(QtWidgets.QFrame):
                 editor = es.getCurrentEditor()
                 if editor and editor.hasFocus():
                     self.hide()
+
+    def retireTimers(self):
+        """Stop callbacks before the owning workspace runtime is disposed."""
+        self._timersRetired = True
+        self._timerAutoHide.stop()
+        self._timerBeginEnd.stop()
 
     def hideMe(self):
         """Hide the find/replace widget."""

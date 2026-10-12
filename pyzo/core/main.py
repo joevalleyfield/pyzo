@@ -3765,8 +3765,7 @@ class MainWindow(_ApplicationHostBase):
         window.setWindowIcon(icon)
 
     def _removeEditorHost(self, host):
-        host._findReplace._timerAutoHide.stop()
-        host._findReplace._timerBeginEnd.stop()
+        host._findReplace.retireTimers()
         runtime = self._peerRuntimeForEditorHost(host)
         hosts = runtime.editor_hosts if runtime is not None else self._editorHosts
         dock = hosts.pop(host, None)

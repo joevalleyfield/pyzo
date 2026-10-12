@@ -80,6 +80,10 @@ class WorkspaceRuntime:
         if self._disposed:
             return
         self._disposed = True
+        for host in self.editor_hosts:
+            find_replace = getattr(host, "_findReplace", None)
+            if find_replace is not None:
+                find_replace.retireTimers()
         self.editor_hosts.clear()
         self.shell_hosts.clear()
         self.backend.close()
