@@ -175,7 +175,10 @@ def test_traceback_canonical_alias_uses_registered_document_identity(
     physical = tmp_path / "physical.py"
     physical.write_text("source")
     alias = tmp_path / "alias.py"
-    alias.symlink_to(physical)
+    from spikes.peer_frames.filesystem_capabilities import create_optional_symlink
+
+    if not create_optional_symlink(alias, physical):
+        pytest.skip("optional symlink affordance unavailable to this Windows account")
     identity = w.views[0]._peerDocumentIdentity
     assert w.docs.rename_document(identity, str(alias)).applied
     w.debugging.navigate(w.shells[0], str(physical), 2)
@@ -204,3 +207,18 @@ def test_lost_foreground_debugger_disables_controls_without_fallback(
     selected._context.connection_count = 0
     assert not commands.is_enabled("shell.debug.control.next")
     assert not commands.invoke("shell.debug.control.next")
+
+
+def test_debug_indicators_match_platform_path_casing(debugging, monkeypatch):
+    import ntpath
+    from pyzo.core import workspaceDebugging
+
+    w = debugging
+    shell = w.shells[0]
+    w.service.foreground_shell(shell)
+    shell._workspaceSessionSources = {r"C:\Work\Shared.py": w.views[0]._peerDocumentIdentity}
+    monkeypatch.setattr(workspaceDebugging.os.path, "normcase", ntpath.normcase)
+    w.debugging.indicators(shell, [(r"c:\work\shared.py", 2)])
+    assert [editor.indicator for editor in w.views] == [2, 2, None]
+    w.debugging.navigate(shell, r"c:\work\shared.py", 2)
+    assert w.navigation[-1] == (w.a, w.views[0]._peerDocumentIdentity, r"c:\work\shared.py", 2)

@@ -152,10 +152,11 @@ def test_script_saves_then_uses_exact_selected_native_strategy(
     assert receipt.policy.autosave and receipt.policy.recycle is (not ipython)
     assert w.saves == [source]
     if ipython:
+        import os
         from pathlib import Path
 
         assert w.shells[0].commands == [
-            f'%cd "{Path(source._filename).parent}"\n',
+            f'%cd "{os.path.normcase(str(Path(source._filename).parent))}"\n',
             f'%run -i "{source._filename}"\n',
         ]
         assert not w.shells[0].restarts

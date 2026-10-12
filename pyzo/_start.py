@@ -399,7 +399,7 @@ def start():
 
         startTime = time.time()
         timer = QtCore.QTimer()
-        timer.setInterval(500)
+        timer.setInterval(100 if host._peerFrameMode else 500)
         timer.timeout.connect(testrunTimerCallback)
         timer.start()
 

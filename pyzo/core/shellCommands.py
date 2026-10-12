@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pyzo
 
 from pyzo.qt import QtCore, QtGui
+from shiboken6 import isValid
 
 
 @dataclass(frozen=True)
@@ -280,16 +281,28 @@ class ShellCommandProjector(QtCore.QObject):
 
     def refresh(self):
         live = []
-        for action, command_id, shell_provider in self._projections:
-            try:
-                action.setEnabled(
-                    self._service.is_enabled(command_id, shell_provider())
-                )
-            except (AttributeError, RuntimeError):
-                continue
-            live.append((action, command_id, shell_provider))
+        for action, command_id, shell_provider in tuple(self._projections):
+            if self._refresh_action(action, command_id, shell_provider):
+                live.append((action, command_id, shell_provider))
         self._projections = live
 
+    def retire_menu(self, menu):
+        self._projections = [
+            entry for entry in self._projections
+            if isValid(entry[0]) and entry[0].parent() is not menu
+        ]
+
     def _register(self, action, command_id, shell_provider):
-        self._projections.append((action, command_id, shell_provider))
-        self.refresh()
+        # Adding one frame's action does not change existing shell state.
+        # Refreshing the entire census here makes frame construction quadratic.
+        if self._refresh_action(action, command_id, shell_provider):
+            self._projections.append((action, command_id, shell_provider))
+
+    def _refresh_action(self, action, command_id, shell_provider):
+        if not isValid(action):
+            return False
+        try:
+            action.setEnabled(self._service.is_enabled(command_id, shell_provider()))
+        except (AttributeError, RuntimeError):
+            return False
+        return True
