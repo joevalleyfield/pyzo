@@ -2498,8 +2498,6 @@ class MainWindow(_ApplicationHostBase):
             backend._pyzoFocusWatched = True
         if not getattr(backend, "_pyzoChromeWatched", False):
             backend.add_settled_callback(self._reconcilePeerChrome)
-            if backend.manager is not self._peerCommandProjector.dock_manager:
-                backend.manager.focusedDockWidgetChanged.connect(self._peerCommandProjector.refresh)
             backend._pyzoChromeWatched = True
 
     def _peerRuntimeFrameWindows(self):
@@ -2681,8 +2679,6 @@ class MainWindow(_ApplicationHostBase):
             or getattr(self, "_peerClosingWorkspace", False)
         ):
             return
-        if self._peerFrameMode and dock_widget is not None:
-            self._projectPeerFrameMetadata(dock_widget)
         if self._peerFrameMode:
             for identity in self._peerRuntimeCatalog.identities:
                 runtime = self._peerRuntimeCatalog.runtime(identity)
@@ -2696,6 +2692,7 @@ class MainWindow(_ApplicationHostBase):
                 result = self._peerWorkspaces.adopt_backend_activation(identity, pane_id)
                 if not result.applied:
                     return
+                self._projectPeerFrameMetadata(dock_widget)
                 for host, dock in runtime.editor_hosts.items():
                     if dock is dock_widget:
                         pyzo.editors.setActiveGroup(host)
@@ -5542,7 +5539,6 @@ class MainWindow(_ApplicationHostBase):
         window._workspaceContextOwner = runtime.identity
         if getattr(self, "_peerCommandProjector", None) is not None:
             self._watchPeerRuntimeChrome(runtime)
-            self._reconcilePeerChrome()
         self._refreshWorkspaceAffiliation()
 
     def _removePeerDock(self, dock):

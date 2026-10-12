@@ -38,5 +38,28 @@ def test_each_runtime_chrome_and_focus_are_watched_once():
     runtime = NS(backend=backend)
     MainWindow._watchPeerRuntimeChrome(host, runtime)
     MainWindow._watchPeerRuntimeChrome(host, runtime)
-    assert focus == [host._onFocusedDockWidgetChanged, host._peerCommandProjector.refresh]
+    assert focus == [host._onFocusedDockWidgetChanged]
     assert settled == [host._reconcilePeerChrome]
+
+
+def test_render_focus_does_not_reproject_affiliation_but_user_focus_does(monkeypatch):
+    dock, group = object(), object()
+    metadata, selection = [], []
+    backend = NS(docks={"pane": dock}, _rendering=True, _closing=False,
+                 _pane_id_from_dock=lambda _: "pane")
+    runtime = NS(backend=backend, editor_hosts={group: dock}, shell_hosts={})
+    host = NS(_peerFrameMode=True,
+              _peerRuntimeCatalog=NS(identities=("a",), runtime=lambda _: runtime),
+              _projectPeerFrameMetadata=metadata.append,
+              _peerWorkspaces=NS(adopt_backend_activation=lambda *_: NS(applied=True)))
+    monkeypatch.setattr(pyzo, "editors", NS(setActiveGroup=selection.append), raising=False)
+    MainWindow._onFocusedDockWidgetChanged(host, dock)
+    assert metadata == [] and selection == []
+    backend._rendering = False
+    MainWindow._onFocusedDockWidgetChanged(host, dock)
+    assert metadata == [dock] and selection == [group]
+    metadata.clear()
+    selection.clear()
+    host._peerWorkspaces.adopt_backend_activation = lambda *_: NS(applied=False)
+    MainWindow._onFocusedDockWidgetChanged(host, dock)
+    assert metadata == [] and selection == []
