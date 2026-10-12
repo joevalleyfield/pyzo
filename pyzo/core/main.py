@@ -4872,8 +4872,8 @@ class MainWindow(_ApplicationHostBase):
             }
             if first_identity != "first" or second_identity != "second":
                 return False
-            expected_cwd = os.path.realpath(state["cwd_directory"].name)
-            if second_shell.get_kernel_cd() != expected_cwd:
+            expected_cwd = os.path.normcase(os.path.realpath(state["cwd_directory"].name))
+            if os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) != expected_cwd:
                 return False
 
             first_context = first_shell._context
@@ -4943,7 +4943,7 @@ class MainWindow(_ApplicationHostBase):
                 QtWidgets.QApplication.processEvents()
                 assert first_shell._context is first_context
                 assert second_shell._context is second_context
-                assert second_shell.get_kernel_cd() == expected_cwd
+                assert os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) == expected_cwd
                 assert pyzo.shells.getExecutionShell() is second_shell
 
             affinity_frame_id = "pyzo-affinity-shell-frame"
@@ -4985,7 +4985,7 @@ class MainWindow(_ApplicationHostBase):
             assert first_result != "ran-second"
             assert first_shell._context is state["first_context"]
             assert second_shell._context is state["second_context"]
-            assert second_shell.get_kernel_cd() == state["expected_cwd"]
+            assert os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) == state["expected_cwd"]
             assert pyzo.editors.closeFile(state["editor"]) == 1
             os.remove(state["path"])
             # Windows holds a process's working directory open until it moves
@@ -4999,7 +4999,7 @@ class MainWindow(_ApplicationHostBase):
         if phase == "wait-affinity-release":
             first_shell = state["first_shell"]
             second_shell = state["second_shell"]
-            if os.path.normcase(second_shell.get_kernel_cd()) != os.path.normcase(
+            if os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) != os.path.normcase(
                 os.path.realpath(tempfile.gettempdir())
             ):
                 return False
