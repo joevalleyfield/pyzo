@@ -26,3 +26,17 @@ def test_settled_frame_update_retains_other_loaded_workspace_chrome():
     catalog.identities = ("b",)
     MainWindow._reconcilePeerChrome(host, (b,))
     assert status[-1] == (b,) and menus[-1] == (b,)
+
+
+def test_each_runtime_chrome_and_focus_are_watched_once():
+    focus, settled, refreshed = [], [], []
+    backend = NS(manager=NS(focusedDockWidgetChanged=NS(connect=focus.append)),
+                 add_settled_callback=settled.append)
+    host = NS(_onFocusedDockWidgetChanged=lambda *_: None,
+              _reconcilePeerChrome=lambda *_: None,
+              _peerCommandProjector=NS(dock_manager=None, refresh=lambda *_: refreshed.append(True)))
+    runtime = NS(backend=backend)
+    MainWindow._watchPeerRuntimeChrome(host, runtime)
+    MainWindow._watchPeerRuntimeChrome(host, runtime)
+    assert focus == [host._onFocusedDockWidgetChanged, host._peerCommandProjector.refresh]
+    assert settled == [host._reconcilePeerChrome]

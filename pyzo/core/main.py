@@ -1182,6 +1182,7 @@ class MainWindow(_ApplicationHostBase):
                     runtime.backend.manager.focusedDockWidgetChanged.connect(
                         self._onFocusedDockWidgetChanged
                     )
+                runtime.backend._pyzoFocusWatched = True
         self._toolWorkspace = ToolWorkspaceAccess(
             dock_manager=self._dockManager,
             add_dock=self._addToolDock,
@@ -1397,7 +1398,8 @@ class MainWindow(_ApplicationHostBase):
                 command_menu_titles={VIEW_STATUS_COMMAND: view_title},
                 frame_provider=self._peerRuntimeFrameWindows,
             )
-            self._peerBackend.add_settled_callback(self._reconcilePeerChrome)
+            for identity in self._peerRuntimeCatalog.identities:
+                self._watchPeerRuntimeChrome(self._peerRuntimeCatalog.runtime(identity))
             pyzo.menuProjector = self._peerCommandProjector
         else:
             menu.buildMenus(self.menuBar())
@@ -2488,6 +2490,17 @@ class MainWindow(_ApplicationHostBase):
             manager.closeTool(tool_id)
         for tool_id in target - current:
             manager.loadTool(tool_id)
+
+    def _watchPeerRuntimeChrome(self, runtime):
+        backend = runtime.backend
+        if not getattr(backend, "_pyzoFocusWatched", False):
+            backend.manager.focusedDockWidgetChanged.connect(self._onFocusedDockWidgetChanged)
+            backend._pyzoFocusWatched = True
+        if not getattr(backend, "_pyzoChromeWatched", False):
+            backend.add_settled_callback(self._reconcilePeerChrome)
+            if backend.manager is not self._peerCommandProjector.dock_manager:
+                backend.manager.focusedDockWidgetChanged.connect(self._peerCommandProjector.refresh)
+            backend._pyzoChromeWatched = True
 
     def _peerRuntimeFrameWindows(self):
         # Every loaded workspace owns live frames. Foreground changes must not
@@ -5527,6 +5540,9 @@ class MainWindow(_ApplicationHostBase):
         dock.setWindowTitle(title)
         window = backend.frame_windows[f"pyzo-frame-{pane_id}"]
         window._workspaceContextOwner = runtime.identity
+        if getattr(self, "_peerCommandProjector", None) is not None:
+            self._watchPeerRuntimeChrome(runtime)
+            self._reconcilePeerChrome()
         self._refreshWorkspaceAffiliation()
 
     def _removePeerDock(self, dock):
