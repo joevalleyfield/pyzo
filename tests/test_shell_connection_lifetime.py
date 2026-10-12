@@ -3,7 +3,13 @@
 from types import SimpleNamespace
 
 import pytest
-from pyzo.qt import QtWidgets
+from pyzo.qt import QtCore, QtWidgets
+
+
+class ShellProbe(QtCore.QObject):
+    def __init__(self, **attributes):
+        super().__init__()
+        self.__dict__.update(attributes)
 
 
 @pytest.mark.parametrize(
@@ -30,7 +36,7 @@ def test_close_callback_uses_current_connection_identity(state, monkeypatch):
         MoveOperation=SimpleNamespace(End="end"),
         movePosition=lambda *args: calls.append("cursor"),
     )
-    shell = SimpleNamespace(
+    shell = ShellProbe(
         _brokerConnection=None if state == "preparing" else current,
         _context=None
         if state == "current-no-context"
