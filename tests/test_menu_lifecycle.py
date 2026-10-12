@@ -89,3 +89,21 @@ def test_retirement_rejects_callback_already_queued_by_qt():
     _app.processEvents()
     assert not calls
     delete(menu)
+
+
+def test_registering_new_action_preserves_existing_state_until_state_changes():
+    mapper = Mapper()
+    calls, enabled = [], {"a": True, "b": False}
+    def evaluate(command_id, shell):
+        calls.append(command_id)
+        return enabled[command_id]
+    projector = ShellCommandProjector(NS(stateChanged=mapper.keyMappingChanged, is_enabled=evaluate))
+    a, b = QtGui.QAction(), QtGui.QAction()
+    projector._register(a, "a", lambda: None)
+    enabled["a"] = False
+    projector._register(b, "b", lambda: None)
+    assert calls == ["a", "b"] and a.isEnabled() and not b.isEnabled()
+    enabled["b"] = True
+    mapper.keyMappingChanged.emit()
+    assert calls == ["a", "b", "a", "b"]
+    assert not a.isEnabled() and b.isEnabled()
