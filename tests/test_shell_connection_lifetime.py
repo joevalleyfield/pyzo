@@ -3,7 +3,13 @@
 from types import SimpleNamespace
 
 import pytest
-from pyzo.qt import QtWidgets
+from pyzo.qt import QtCore, QtWidgets
+
+
+class ShellProbe(QtCore.QObject):
+    def __init__(self, **attributes):
+        super().__init__()
+        self.__dict__.update(attributes)
 
 
 @pytest.mark.parametrize(
@@ -30,7 +36,7 @@ def test_close_callback_uses_current_connection_identity(state, monkeypatch):
         MoveOperation=SimpleNamespace(End="end"),
         movePosition=lambda *args: calls.append("cursor"),
     )
-    shell = SimpleNamespace(
+    shell = ShellProbe(
         _brokerConnection=None if state == "preparing" else current,
         _context=None
         if state == "current-no-context"
@@ -92,7 +98,8 @@ def test_connection_is_retired_before_replacement_preparation_can_fail(monkeypat
 def test_committed_close_retires_transport_before_flush_callback(monkeypatch):
     import pyzo
     from pyzo.core.shell import PythonShell
-    calls=[];old=object()
+    calls=[]
+    old=SimpleNamespace(closed=SimpleNamespace(unbind=lambda handler: None))
     shell=SimpleNamespace(_brokerConnection=old,sendBreakPoints=object(),
         terminate=lambda:calls.append("terminate"),
         _timer=SimpleNamespace(stop=lambda:calls.append("stop"),timeout=SimpleNamespace(disconnect=lambda:None)),
@@ -101,6 +108,7 @@ def test_committed_close_retires_transport_before_flush_callback(monkeypatch):
         assert shell._brokerConnection is None
         PythonShell._onConnectionClose(shell,old,"queued after retirement")
         calls.append("flush")
+    shell._onConnectionClose = lambda connection, why: PythonShell._onConnectionClose(shell, connection, why)
     shell._context=SimpleNamespace(connection_count=1,flush=flush,close=lambda:calls.append("close"))
     monkeypatch.setattr(pyzo,"editors",SimpleNamespace(breakPointsChanged=SimpleNamespace(disconnect=lambda _:None)),raising=False)
     monkeypatch.setattr(pyzo,"shells",SimpleNamespace(removeShell=lambda _:calls.append("remove")),raising=False)

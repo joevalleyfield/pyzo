@@ -2381,23 +2381,31 @@ class MainWindow(_ApplicationHostBase):
 
     def _checkpointPeerContext(self):
         contexts = getattr(pyzo, "workspaceContext", None)
-        if (
-            contexts is None
-            or getattr(self, "_peerClosingWorkspace", False)
-            or getattr(self, "_peerApplicationExitRequested", False)
-        ):
+        def suspended():
+            return (
+                getattr(self, "_peerClosingWorkspace", False)
+                or getattr(self, "_peerApplicationExitRequested", False)
+            )
+
+        if contexts is None or suspended():
             return
-        snapshot = {
-            str(owner): contexts.snapshot(owner)
-            for owner in self._peerWorkspaces.workspace_ids
-        }
+        owners = tuple(self._peerWorkspaces.workspace_ids)
+        snapshot = {}
+        # Capture/preferences can call application code. Recheck ownership
+        # after those callbacks before using a snapshot of retired owners.
+        for owner in owners:
+            snapshot[str(owner)] = contexts.snapshot(owner)
+            if suspended() or owners != tuple(self._peerWorkspaces.workspace_ids):
+                return
         if snapshot != self._peerContextSnapshot:
             previous = self._peerContextSnapshot or {}
-            for owner in self._peerWorkspaces.workspace_ids:
+            for owner in owners:
                 if snapshot[str(owner)].get("config") != previous.get(str(owner), {}).get(
                     "config"
                 ):
                     contexts.apply_preferences(owner)
+                    if suspended() or owners != tuple(self._peerWorkspaces.workspace_ids):
+                        return
             self._peerContextSnapshot = deepcopy(snapshot)
             self._peerRetentionCoordinator.edit()
         self._refreshWorkspaceAffiliation()
@@ -4334,11 +4342,17 @@ class MainWindow(_ApplicationHostBase):
 
     def _requestPeerApplicationExit(self, disposition):
         self._peerApplicationExitRequested = True
+        timer = getattr(self, "_peerContextTimer", None)
+        resume_checkpoint = timer is not None and timer.isActive()
+        if timer is not None:
+            timer.stop()
         try:
             return self._peerShutdownCoordinator.request(disposition)
         finally:
             if self._peerShutdownCoordinator.phase == "idle":
                 self._peerApplicationExitRequested = False
+                if resume_checkpoint:
+                    timer.start()
 
     def _onPeerApplicationStateChanged(self, state):
         if state == QtCore.Qt.ApplicationState.ApplicationActive:

@@ -2006,9 +2006,13 @@ class PythonShell(BaseShell):
     def closeShellCommitted(self, terminate_kernel=True):
         """Release a shell after application lifecycle policy commits."""
 
-        # The committed shell is being retired. A queued connection-close
-        # callback must not decorate it after its Qt parent has been destroyed.
+        # Retire observation before cleanup can queue or dispatch a close.
+        # Unbinding prevents new events; clearing identity rejects old ones.
+        connection = getattr(self, "_brokerConnection", None)
         self._brokerConnection = None
+        if connection is not None:
+            connection.closed.unbind(self._onConnectionClose)
+
         pyzo.editors.breakPointsChanged.disconnect(self.sendBreakPoints)
 
         # If we can, try to tell the broker to terminate the kernel
@@ -2035,7 +2039,12 @@ class PythonShell(BaseShell):
         be considered an error-state if this function is called.
         """
 
-        if c is not getattr(self, "_brokerConnection", None):
+        if c is None or c is not getattr(self, "_brokerConnection", None):
+            return
+        from shiboken6 import isValid
+
+        # The Python wrapper can survive its native owner and a queued event.
+        if not isValid(self):
             return
 
         # Stop context
