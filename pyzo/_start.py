@@ -1,10 +1,10 @@
 import os
 import sys
-import ctypes
 import locale
 import traceback
 
 import pyzo
+from pyzo.util.acceptanceEvaluation import EvaluationPending
 
 # Work-around for running Pyzo on Android in Termux
 # Before Python 3.13, sys.platform was 'linux' on Android.
@@ -47,11 +47,8 @@ from pyzo.util import zon as ssdf  # zon is ssdf-light
 from pyzo.qt import QtCore, QtGui, QtWidgets
 
 # Enable high-res displays
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    pass  # fail on non-windows
+# Let Qt select per-monitor DPI awareness. Setting system awareness first
+# prevents a later per-monitor call from taking effect on Windows.
 try:
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
@@ -341,6 +338,11 @@ def start():
             if host._peerFrameMode:
                 try:
                     host._testPeerRunAndLiveDebugTick()
+                    evaluations = getattr(host, "_peerRunDebugSmoke", {}).get("evaluations")
+                    if evaluations is not None:
+                        evaluations.finish_tick()
+                except EvaluationPending:
+                    pass  # Still enforce the original overall test deadline below.
                 except Exception:
                     host._peerRunDebugSmokeError = traceback.format_exc()
                     print(host._peerRunDebugSmokeError, file=sys.stderr)

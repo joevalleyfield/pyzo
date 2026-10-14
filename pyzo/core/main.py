@@ -2381,26 +2381,38 @@ class MainWindow(_ApplicationHostBase):
 
     def _checkpointPeerContext(self):
         contexts = getattr(pyzo, "workspaceContext", None)
-        if contexts is None or getattr(self, "_peerClosingWorkspace", False):
+        def suspended():
+            return (
+                getattr(self, "_peerClosingWorkspace", False)
+                or getattr(self, "_peerApplicationExitRequested", False)
+            )
+
+        if contexts is None or suspended():
             return
-        snapshot = {
-            str(owner): contexts.snapshot(owner)
-            for owner in self._peerWorkspaces.workspace_ids
-        }
+        owners = tuple(self._peerWorkspaces.workspace_ids)
+        snapshot = {}
+        # Capture/preferences can call application code. Recheck ownership
+        # after those callbacks before using a snapshot of retired owners.
+        for owner in owners:
+            snapshot[str(owner)] = contexts.snapshot(owner)
+            if suspended() or owners != tuple(self._peerWorkspaces.workspace_ids):
+                return
         if snapshot != self._peerContextSnapshot:
             previous = self._peerContextSnapshot or {}
-            for owner in self._peerWorkspaces.workspace_ids:
+            for owner in owners:
                 if snapshot[str(owner)].get("config") != previous.get(str(owner), {}).get(
                     "config"
                 ):
                     contexts.apply_preferences(owner)
+                    if suspended() or owners != tuple(self._peerWorkspaces.workspace_ids):
+                        return
             self._peerContextSnapshot = deepcopy(snapshot)
             self._peerRetentionCoordinator.edit()
         self._refreshWorkspaceAffiliation()
         self._peerStatusProjector.refresh()
 
     def _refreshWorkspaceAffiliation(self):
-        if not hasattr(self, "_peerWorkspaces"):
+        if not hasattr(self, "_peerWorkspaces") or getattr(self, "_peerApplicationExitRequested", False):
             return
         from shiboken6 import isValid
 
@@ -3761,8 +3773,7 @@ class MainWindow(_ApplicationHostBase):
         window.setWindowIcon(icon)
 
     def _removeEditorHost(self, host):
-        host._findReplace._timerAutoHide.stop()
-        host._findReplace._timerBeginEnd.stop()
+        host._findReplace.retireTimers()
         runtime = self._peerRuntimeForEditorHost(host)
         hosts = runtime.editor_hosts if runtime is not None else self._editorHosts
         dock = hosts.pop(host, None)
@@ -4331,11 +4342,17 @@ class MainWindow(_ApplicationHostBase):
 
     def _requestPeerApplicationExit(self, disposition):
         self._peerApplicationExitRequested = True
+        timer = getattr(self, "_peerContextTimer", None)
+        resume_checkpoint = timer is not None and timer.isActive()
+        if timer is not None:
+            timer.stop()
         try:
             return self._peerShutdownCoordinator.request(disposition)
         finally:
             if self._peerShutdownCoordinator.phase == "idle":
                 self._peerApplicationExitRequested = False
+                if resume_checkpoint:
+                    timer.start()
 
     def _onPeerApplicationStateChanged(self, state):
         if state == QtCore.Qt.ApplicationState.ApplicationActive:
@@ -4552,6 +4569,13 @@ class MainWindow(_ApplicationHostBase):
         if state is None:
             state = self._peerRunDebugSmoke = {"phase": "wait-shell"}
 
+        from pyzo.util.acceptanceEvaluation import EvaluationPoller
+        from yoton.channels.channels_reqrep import TimeoutError as EvaluationTimeout
+        if "evaluations" not in state:
+            state["evaluations"] = EvaluationPoller(EvaluationTimeout)
+        def evaluate(target, expression):
+            return state["evaluations"].value(target, expression, state["phase"])
+
         phase = state["phase"]
         if phase == "wait-shell":
             shell = pyzo.shells.getCurrentShell()
@@ -4592,7 +4616,7 @@ class MainWindow(_ApplicationHostBase):
         shell = state["shell"]
         editor = state.get("editor")
         if phase == "wait-run":
-            value = shell._request.eval("peer_run_value").result_or_cancel(0.2)
+            value = evaluate(shell, "peer_run_value")
             if value != 42:
                 return False
             editor.toggleBreakpoint(5, triState=False)
@@ -4627,7 +4651,7 @@ class MainWindow(_ApplicationHostBase):
             host = next(host for host in pyzo.shells.hosts if shell in host.getShells())
             assert host._dbs._lastFrames == frames
             assert host._dbs._lastIndex == index
-            value = shell._request.eval("peer_frame_value").result_or_cancel(0.2)
+            value = evaluate(shell, "peer_frame_value")
             assert value == 41
             shell.executeCommand("DB CONTINUE\n")
             state["phase"] = "wait-continue"
@@ -4636,9 +4660,7 @@ class MainWindow(_ApplicationHostBase):
         if phase == "wait-continue":
             if (shell._debugState or {}).get("debugmode", 0) != 0:
                 return False
-            value = shell._request.eval("peer_live_debug_result").result_or_cancel(
-                0.2
-            )
+            value = evaluate(shell, "peer_live_debug_result")
             if value != 42:
                 return False
             editor.toggleBreakpoint(5, triState=False)
@@ -4687,9 +4709,7 @@ class MainWindow(_ApplicationHostBase):
         if phase == "wait-exception":
             if (shell._debugState or {}).get("debugmode", 0) != 0:
                 return False
-            last_exception = shell._request.eval(
-                "repr(__import__('sys').last_value)"
-            ).result_or_cancel(0.2)
+            last_exception = evaluate(shell, "repr(__import__('sys').last_value)")
             if last_exception != "RuntimeError('peer-postmortem')":
                 return False
             # Evaluation and operation receipts arrive on separate channels.
@@ -4718,9 +4738,7 @@ class MainWindow(_ApplicationHostBase):
             assert editor_dock in self._peerBackend.frame_windows[
                 state["source_frame_id"]
             ].dockWidgets()
-            captured = shell._request.eval(
-                "peer_captured_value"
-            ).result_or_cancel(0.2)
+            captured = evaluate(shell, "peer_captured_value")
             assert captured == 84
             outer_index = next(
                 i
@@ -4806,9 +4824,7 @@ class MainWindow(_ApplicationHostBase):
             debug_state = shell._debugState or {}
             assert debug_state.get("debugmode") == 1
             assert debug_state.get("index") == state["outer_index"]
-            result = shell._request.eval(
-                "peer_selected_result"
-            ).result_or_cancel(0.2)
+            result = evaluate(shell, "peer_selected_result")
             if result != 42:
                 return False
             shell.executeCommand("DB STOP\n")
@@ -4859,12 +4875,8 @@ class MainWindow(_ApplicationHostBase):
         if phase == "wait-affinity-seed":
             first_shell = state["first_shell"]
             second_shell = state["second_shell"]
-            first_identity = first_shell._request.eval(
-                "peer_kernel_identity"
-            ).result_or_cancel(0.2)
-            second_identity = second_shell._request.eval(
-                "peer_kernel_identity"
-            ).result_or_cancel(0.2)
+            first_identity = evaluate(first_shell, "peer_kernel_identity")
+            second_identity = evaluate(second_shell, "peer_kernel_identity")
             state["affinity_observation"] = {
                 "first_identity": first_identity,
                 "second_identity": second_identity,
@@ -4872,8 +4884,8 @@ class MainWindow(_ApplicationHostBase):
             }
             if first_identity != "first" or second_identity != "second":
                 return False
-            expected_cwd = os.path.realpath(state["cwd_directory"].name)
-            if second_shell.get_kernel_cd() != expected_cwd:
+            expected_cwd = os.path.normcase(os.path.realpath(state["cwd_directory"].name))
+            if os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) != expected_cwd:
                 return False
 
             first_context = first_shell._context
@@ -4943,7 +4955,7 @@ class MainWindow(_ApplicationHostBase):
                 QtWidgets.QApplication.processEvents()
                 assert first_shell._context is first_context
                 assert second_shell._context is second_context
-                assert second_shell.get_kernel_cd() == expected_cwd
+                assert os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) == expected_cwd
                 assert pyzo.shells.getExecutionShell() is second_shell
 
             affinity_frame_id = "pyzo-affinity-shell-frame"
@@ -4974,18 +4986,14 @@ class MainWindow(_ApplicationHostBase):
         if phase == "wait-affinity-run":
             first_shell = state["first_shell"]
             second_shell = state["second_shell"]
-            second_result = second_shell._request.eval(
-                "peer_affinity_result"
-            ).result_or_cancel(0.2)
+            second_result = evaluate(second_shell, "peer_affinity_result")
             if second_result != "ran-second":
                 return False
-            first_result = first_shell._request.eval(
-                "peer_affinity_result"
-            ).result_or_cancel(0.2)
+            first_result = evaluate(first_shell, "peer_affinity_result")
             assert first_result != "ran-second"
             assert first_shell._context is state["first_context"]
             assert second_shell._context is state["second_context"]
-            assert second_shell.get_kernel_cd() == state["expected_cwd"]
+            assert os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) == state["expected_cwd"]
             assert pyzo.editors.closeFile(state["editor"]) == 1
             os.remove(state["path"])
             # Windows holds a process's working directory open until it moves
@@ -4999,7 +5007,7 @@ class MainWindow(_ApplicationHostBase):
         if phase == "wait-affinity-release":
             first_shell = state["first_shell"]
             second_shell = state["second_shell"]
-            if os.path.normcase(second_shell.get_kernel_cd()) != os.path.normcase(
+            if os.path.normcase(os.path.realpath(second_shell.get_kernel_cd())) != os.path.normcase(
                 os.path.realpath(tempfile.gettempdir())
             ):
                 return False
