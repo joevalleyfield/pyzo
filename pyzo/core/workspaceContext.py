@@ -299,6 +299,7 @@ class LocalEditors(QtCore.QObject):
     def loadFile(self, filename, *args, **kwargs):
         if not filename:
             return None
+        focus_requested = kwargs.get("updateTabs", args[0] if args else True)
         main, owner = self.context.service.main, self.context.owner
         if not main._externalFileOpenAllowed() or not main._peerIngressWorkspaceEligible(owner):
             return None
@@ -327,7 +328,9 @@ class LocalEditors(QtCore.QObject):
             if item is not None:
                 self._active = group
                 pyzo.editors.setActiveGroup(group)
-                item.editor.setFocus()
+                if focus_requested:
+                    from .focus import focus_widget
+                    focus_widget(item.editor)
                 return item
         group = self.context.service.main._createEditorHostForRuntime(
             self.context.runtime
@@ -336,6 +339,9 @@ class LocalEditors(QtCore.QObject):
         self._active = group
         item = group.loadFile(filename, *args, _workspace_local=True, **kwargs)
         pyzo.editors.setActiveGroup(group)
+        if item is not None and focus_requested:
+            from .focus import focus_widget
+            focus_widget(item.editor)
         return item
 
     def newFile(self):
@@ -346,6 +352,9 @@ class LocalEditors(QtCore.QObject):
         self._active = group
         item = group.newFile()
         pyzo.editors.setActiveGroup(group)
+        if item is not None:
+            from .focus import focus_widget
+            focus_widget(item.editor)
         return item
 
     def closeFile(self, editor=None):

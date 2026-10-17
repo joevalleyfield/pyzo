@@ -1162,12 +1162,14 @@ class ViewMenu(Menu):
     def _selectShell(self):
         shell = context_for(self).shells.getCurrentShell()
         if shell:
-            shell.setFocus()
+            from .focus import focus_widget
+            focus_widget(shell)
 
     def _selectEditor(self):
         editor = context_for(self).editors.getCurrentEditor()
         if editor:
-            editor.setFocus()
+            from .focus import focus_widget
+            focus_widget(editor)
 
     def _viewManager(self):
         parent = (
