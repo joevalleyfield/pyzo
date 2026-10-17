@@ -674,6 +674,8 @@ class DebugStack(QtWidgets.QToolButton):
                 cursor.MoveOperation.EndOfBlock, cursor.MoveMode.KeepAnchor
             )
             editor.setTextCursor(cursor)
+            from .focus import focus_widget
+            focus_widget(editor)
         else:
             # focus on shell and not on an editor because there is no valid file
             shell = self._contextShell()
